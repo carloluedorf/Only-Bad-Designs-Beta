@@ -405,8 +405,10 @@ a.btn { text-decoration: none; color: inherit; }
     <div class="mbtns"><button type="button" data-mode="vector" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l7-7 3 3-7 7z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18z"/><path d="M2 2l7.6 7.6"/><circle cx="11" cy="11" r="2"/></svg><span>Vektorisieren</span></button><button type="button" data-mode="font" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7V5h11v2M9.5 5v14M7.5 19h4M14 13h6M17 13v6"/></svg><span>Schrift</span></button><button type="button" data-mode="designs" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span>Entwürfe</span></button><button type="button" data-mode="compose" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></svg><span>Komposition</span></button></div>
   </nav>
   <details class="menu" id="dataMenu"><summary class="btn small"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/></svg>Daten</summary><div class="menulist">
+    <p class="hint" id="dataStatus" style="margin:4px 10px 6px;max-width:240px">Wird geladen …</p>
     <button type="button" class="mi" id="dataExport">Alles sichern (.json)</button>
     <label class="mi" for="dataImport" style="cursor:pointer">Sicherung laden …</label>
+    <button type="button" class="mi" id="dataSnaps">Frühere Stände …</button>
   </div></details>
   <input type="file" id="dataImport" accept="application/json,.json" class="sr">
 </header>
@@ -507,6 +509,8 @@ a.btn { text-decoration: none; color: inherit; }
 
   <main class="main">
     <section class="intro" id="intro" aria-live="polite"></section>
+    <div class="notice" id="saveWarn" hidden role="alert" style="border-left-color:var(--danger)"><span id="saveWarnTxt">Speichern im Browser ist fehlgeschlagen. Deine Änderungen sind nur bis zum Schließen der Seite da – sichere sie jetzt als Datei.</span><button type="button" class="btn small primary" id="saveWarnGo">Jetzt sichern</button></div>
+    <div class="notice" id="snapBox" hidden></div>
     <section id="detail"></section>
     <section id="boardSec">
       <div class="boardhead"><h2 id="boardTitle">Entwürfe</h2><span class="hint" id="boardCount"></span><div id="analysis" class="analysis" hidden></div></div>
@@ -686,14 +690,66 @@ const S = {
 };
 if (!["vector", "font", "designs", "compose"].includes(S.mode)) S.mode = CATS.includes(S.mode) ? "designs" : "vector";
 if (S.cat !== "all" && !CATS.includes(S.cat)) S.cat = "all";
-let designsWarned = false;
+/* ---------- Dauerhaft speichern ----------
+   Entwürfe, Kompositionen, Deko und Referenzen liegen in IndexedDB (viel Platz). localStorage hält nur kleine Einstellungen
+   und dient als Rückfall, falls IndexedDB nicht verfügbar ist. Zusätzlich entstehen regelmäßig Zwischenstände (Snapshots). */
+const IDB = (() => {
+  let dbp = null;
+  const open = () => dbp ||= new Promise((res, rej) => {
+    if (!window.indexedDB) return rej(new Error("no idb"));
+    const r = indexedDB.open("only-bad-designs", 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore("kv"); r.result.createObjectStore("snaps", { keyPath: "t" }); };
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+  const run = async (store, mode, fn) => { const db = await open(); return new Promise((res, rej) => { const t = db.transaction(store, mode), req = fn(t.objectStore(store)); t.oncomplete = () => res(req?.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }); };
+  return {
+    get: k => run("kv", "readonly", st => st.get(k)), set: (k, v) => run("kv", "readwrite", st => st.put(v, k)),
+    snaps: () => run("snaps", "readonly", st => st.getAll()), addSnap: v => run("snaps", "readwrite", st => st.put(v)), delSnap: t => run("snaps", "readwrite", st => st.delete(t))
+  };
+})();
+const PS = { ready: false, ok: false, timer: 0, last: 0, lastSnap: 0, dirty: false };
+const compsForSave = () => S.comps.map(c => ({ ...c, layers: c.layers.map(l => l.src ? { ...l, svg: undefined } : l) }));
+const stateNow = () => ({ v: 1, savedAt: Date.now(), designs: S.designs, comps: compsForSave(), decos: S.decos || [], refs: S.refs, compId: S.compId });
+const stateInfo = st => `${(st.designs || []).filter(d => !d.example).length} Entwürfe · ${(st.comps || []).length} Kompositionen · ${(st.decos || []).length} Deko`;
+function saveFailed(on) { const w = $("#saveWarn"); if (w) w.hidden = !on; }
+async function updateDataStatus() {
+  const el = $("#dataStatus"); if (!el) return;
+  let used = ""; try { const e = await navigator.storage?.estimate?.(); if (e?.usage) used = ` · ${(e.usage / 1048576).toFixed(1)} MB belegt`; } catch {}
+  el.textContent = !PS.ready ? "Wird geladen …" : PS.ok ? `Automatisch gespeichert${PS.last ? " um " + new Date(PS.last).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : ""}${used}` : "Nur im kleinen Browser-Speicher (bis ca. 5 MB) – sichere regelmäßig als Datei.";
+}
+async function persistNow() {
+  clearTimeout(PS.timer);
+  if (!PS.ready) { PS.dirty = true; return; }
+  const st = stateNow();
+  if (PS.ok) {
+    try {
+      await IDB.set("state", st); PS.last = st.savedAt; saveFailed(false);
+      if (Date.now() - PS.lastSnap > 5 * 60 * 1000) await takeSnap(st, "automatisch");
+    } catch { saveFailed(true); }
+  } else {
+    const ok = store.set("designs", S.designs) & store.set("comps", st.comps) & store.set("decos", st.decos) & store.set("refs", S.refs);
+    saveFailed(!ok); if (ok) PS.last = st.savedAt;
+  }
+  updateDataStatus();
+}
+const persistSoon = () => { clearTimeout(PS.timer); PS.timer = setTimeout(persistNow, 700); };
+async function takeSnap(st, label) {
+  if (!PS.ok) return;
+  const has = (st.designs || []).some(d => !d.example) || (st.comps || []).length;
+  if (!has) return;
+  await IDB.addSnap({ t: Date.now(), label, info: stateInfo(st), data: st });
+  PS.lastSnap = Date.now();
+  const all = (await IDB.snaps()).sort((a, b) => b.t - a.t);
+  for (const old of all.slice(15)) await IDB.delSnap(old.t);
+}
 const save = () => {
   try { if (document.getElementById("intro")) renderIntro(); } catch {}
-  if (!store.set("designs", S.designs) && !designsWarned) { designsWarned = true; toast("Der Browser-Speicher ist voll. Neue Entwürfe bleiben bis zum Neuladen – exportiere wichtige als SVG."); } store.set("mode", S.mode); store.set("cat", S.cat);
+  store.set("mode", S.mode); store.set("cat", S.cat); persistSoon();
 };
-const saveRefs = () => { if (!store.set("refs", S.refs)) toast("Referenzen sind zu groß zum Merken – sie bleiben bis zum Neuladen."); };
-let compWarned = false;
-const saveComps = () => { if (S.mode === "compose") try { renderIntro(); } catch {} store.set("compId", S.compId); if (!store.set("comps", S.comps.map(c => ({ ...c, layers: c.layers.map(l => l.src ? { ...l, svg: undefined } : l) }))) && !compWarned) { compWarned = true; toast("Die Kompositionen sind zu groß zum Speichern im Browser. Exportiere wichtige Stände."); } };
+const saveRefs = () => persistSoon();
+const saveComps = () => { if (S.mode === "compose") try { renderIntro(); } catch {} store.set("compId", S.compId); persistSoon(); };
+window.addEventListener("pagehide", () => { if (PS.timer) persistNow(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && PS.timer) persistNow(); });
 
 /* ---------- downloads ---------- */
 let dlPromise = null;
@@ -1270,6 +1326,7 @@ function renderDetail() {
   let armed = false;
   $("#del").onclick = e => {
     if (!armed) { armed = true; e.target.textContent = "Wirklich löschen?"; setTimeout(() => { armed = false; if (e.target.isConnected) e.target.textContent = "Entwurf löschen"; }, 3000); return; }
+    takeSnap(stateNow(), `vor dem Löschen von „${d.name}“`).catch(() => {});
     S.designs = S.designs.filter(x => x.id !== d.id); S.selected = null; save(); render();
   };
 }
@@ -2143,7 +2200,7 @@ function renderLibrary() {
       const th = document.createElement("div"); th.style.cssText = "width:100%;aspect-ratio:1;position:relative";
       th.innerHTML = dd.layer.type === "shape" ? shapeThumb(dd.layer) : `<img src="${svgUrl(dd.layer.svg)}" alt="" style="position:absolute;inset:0;margin:auto;max-width:100%;max-height:100%">`;
       const b = mk(th, "★ " + dd.name, `Eigene Deko „${dd.name}“ einfügen (Rechtsklick: löschen)`, () => addSavedDeco(dd));
-      b.oncontextmenu = e => { e.preventDefault(); if (C.delDeco === dd.id) { S.decos = S.decos.filter(x => x !== dd); store.set("decos", S.decos); C.delDeco = null; renderLibrary(); toast("Deko gelöscht"); } else { C.delDeco = dd.id; toast("Nochmal rechtsklicken zum Löschen"); } };
+      b.oncontextmenu = e => { e.preventDefault(); if (C.delDeco === dd.id) { S.decos = S.decos.filter(x => x !== dd); persistSoon(); C.delDeco = null; renderLibrary(); toast("Deko gelöscht"); } else { C.delDeco = dd.id; toast("Nochmal rechtsklicken zum Löschen"); } };
     }
     for (const [k, sp] of Object.entries(SHAPES)) {
       const th = document.createElement("div"); th.style.cssText = "width:100%;aspect-ratio:1;position:relative";
@@ -2308,6 +2365,7 @@ let compDelArmed = false;
 $("#compDel").onclick = e => {
   if (!compDelArmed) { compDelArmed = true; e.target.textContent = "Wirklich?"; setTimeout(() => { compDelArmed = false; e.target.textContent = "Löschen"; }, 3000); return; }
   compDelArmed = false; e.target.textContent = "Löschen";
+  takeSnap(stateNow(), `vor dem Löschen von „${curComp().name}“`).catch(() => {});
   const c = curComp(); S.comps = S.comps.filter(x => x !== c); delete C.hist[c.id];
   S.compId = S.comps[0]?.id || null; if (!S.comps.length) newComp(false);
   C.sel = null; saveComps(); renderComposer();
@@ -3327,13 +3385,12 @@ function addShapeLayer(key, over = {}) {
   c.layers.push(l); C.sel = l.id; commit(); renderComposer();
   return l;
 }
-S.decos = store.get("decos", []);
+S.decos = S.decos || store.get("decos", []);
 function saveDeco(l) {
   const keep = l.type === "shape" ? ["type", "shape", "w", "h", "color", ...SHAPE_KEYS] : ["type", "svg", "vw", "vh", "w"];
   const name = (l.name || (l.type === "shape" ? SHAPES[l.shape]?.name : "Deko") || "Deko").replace(/^Motiv/, "Deko").slice(0, 40);
   S.decos.unshift({ id: uid(), name, layer: Object.fromEntries(keep.filter(k => l[k] != null).map(k => [k, l[k]])) });
-  if (!store.set("decos", S.decos)) toast("Der Browser-Speicher ist voll – die Deko bleibt nur bis zum Neuladen.");
-  else toast(`„${name}“ unter Bibliothek → Deko gespeichert`);
+  persistSoon(); toast(`„${name}“ unter Bibliothek → Deko gespeichert`);
   if (S.mode === "compose") renderLibrary();
 }
 function addSavedDeco(dd) {
@@ -4357,10 +4414,31 @@ $("#dataExport").onclick = () => {
   $("#dataMenu").open = false;
   const data = {};
   try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith("ms.")) data[k] = localStorage.getItem(k); } } catch {}
-  if (!data["ms.designs"]) data["ms.designs"] = JSON.stringify(S.designs);
-  if (!data["ms.comps"]) data["ms.comps"] = JSON.stringify(S.comps);
+  // große Daten immer aus dem aktuellen Stand, nicht aus dem (evtl. veralteten) Browser-Speicher
+  Object.assign(data, { "ms.designs": JSON.stringify(S.designs), "ms.comps": JSON.stringify(compsForSave()), "ms.decos": JSON.stringify(S.decos || []), "ms.refs": JSON.stringify(S.refs), "ms.compId": JSON.stringify(S.compId) });
   const stamp = new Date().toISOString().slice(0, 10);
   offer(`only-bad-designs-${stamp}.json`, JSON.stringify({ app: "only-bad-designs", version: 1, saved: new Date().toISOString(), data }));
+};
+$("#saveWarnGo").onclick = () => $("#dataExport").click();
+$("#dataMenu").addEventListener("toggle", e => { if (e.target.open) updateDataStatus(); });
+$("#dataSnaps").onclick = async () => {
+  $("#dataMenu").open = false;
+  const box = $("#snapBox");
+  if (!PS.ok) { toast("Frühere Stände gibt es nur mit dem großen Browser-Speicher (IndexedDB)."); return; }
+  const all = (await IDB.snaps()).sort((a, b) => b.t - a.t);
+  box.hidden = false;
+  box.style.flexDirection = "column"; box.style.alignItems = "stretch";
+  box.innerHTML = `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center"><strong>Frühere Stände</strong><button type="button" class="x" aria-label="Schließen">×</button></div>
+    <p class="hint" style="margin:0">Das Tool legt beim Öffnen, alle 5 Minuten und vor jedem Löschen automatisch einen Zwischenstand an (die letzten 15). Beim Wiederherstellen wird der aktuelle Stand vorher ebenfalls gesichert.</p>
+    ${all.length ? all.map(sn => `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:6px"><span style="flex:1;min-width:200px"><strong>${new Date(sn.t).toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short" })}</strong> · ${esc(sn.info)} <em style="color:var(--muted)">(${esc(sn.label)})</em></span><button type="button" class="btn small" data-snap="${sn.t}">Wiederherstellen</button></div>`).join("") : '<p class="hint">Noch keine Zwischenstände.</p>'}`;
+  box.querySelector(".x").onclick = () => { box.hidden = true; };
+  box.querySelectorAll("[data-snap]").forEach(b => b.onclick = async () => {
+    const sn = all.find(x => x.t === +b.dataset.snap); if (!sn) return;
+    await takeSnap(stateNow(), "vor dem Wiederherstellen");
+    Object.assign(S, { designs: sn.data.designs || [], comps: sn.data.comps || [], decos: sn.data.decos || [], refs: sn.data.refs || [], compId: sn.data.compId || null });
+    await persistNow(); location.reload();
+  });
+  box.scrollIntoView({ block: "start", behavior: reduced() ? "auto" : "smooth" });
 };
 $("#dataImport").onchange = async e => {
   const f = e.target.files[0]; e.target.value = ""; $("#dataMenu").open = false;
@@ -4374,7 +4452,15 @@ $("#dataImport").onchange = async e => {
     box.innerHTML = `<span>Sicherung vom ${esc(String(j.saved || "").slice(0, 10))} laden? ${n} Entwürfe und ${comps.length} Kompositionen. Der aktuelle Stand in diesem Browser wird ersetzt.</span><button type="button" class="btn small primary">Laden</button><button type="button" class="btn small">Abbrechen</button>`;
     const [ok, no] = box.querySelectorAll("button");
     no.onclick = () => box.remove();
-    ok.onclick = () => { try { for (const [k, v] of Object.entries(j.data)) if (k.startsWith("ms.") && typeof v === "string") localStorage.setItem(k, v); location.reload(); } catch { toast("Der Browser-Speicher ist voll oder gesperrt."); } };
+    ok.onclick = async () => {
+      try {
+        if (PS.ok) await takeSnap(stateNow(), "vor dem Laden einer Sicherung");
+        const pj = k => { try { return JSON.parse(j.data[k] || "null"); } catch { return null; } };
+        S.designs = pj("ms.designs") || []; S.comps = pj("ms.comps") || []; S.decos = pj("ms.decos") || S.decos || []; S.refs = pj("ms.refs") || []; S.compId = pj("ms.compId") || S.comps[0]?.id || null;
+        for (const [k, v] of Object.entries(j.data)) if (k.startsWith("ms.") && typeof v === "string" && !["ms.designs", "ms.comps", "ms.decos", "ms.refs"].includes(k)) try { localStorage.setItem(k, v); } catch {}
+        await persistNow(); location.reload();
+      } catch { toast("Die Sicherung konnte nicht übernommen werden."); }
+    };
     $("#intro").after(box); box.scrollIntoView({ block: "center" });
   } catch { toast("Das ist keine gültige Sicherung von Only Bad Designs."); }
 };
@@ -4396,6 +4482,34 @@ document.addEventListener("paste", e => {
 });
 
 render();
+
+(async () => {
+  try {
+    const st = await IDB.get("state");
+    PS.ok = true;
+    if (st && (st.designs || st.comps)) {
+      // IndexedDB ist die Quelle. Einmalig: was noch im alten kleinen Speicher liegt, wird dazugenommen (nichts geht verloren)
+      const union = (a, b) => { const ids = new Set((a || []).map(x => x.id)); return [...(a || []), ...(b || []).filter(x => x && !ids.has(x.id))]; };
+      const merge = !store.get("migrated", false);
+      S.designs = merge ? union(st.designs, S.designs) : st.designs || S.designs;
+      S.comps = merge ? union(st.comps, S.comps) : st.comps || [];
+      S.decos = merge ? union(st.decos, S.decos) : st.decos || S.decos || [];
+      S.refs = st.refs || S.refs;
+      if (st.compId && S.comps.some(c => c.id === st.compId)) S.compId = st.compId;
+      PS.ready = true; render();
+      if (merge) { await persistNow(); store.set("migrated", true); }
+    } else {
+      PS.ready = true; await persistNow();   // erster Start: bisherige Daten aus dem kleinen Speicher übernehmen
+      store.set("migrated", true);
+    }
+    navigator.storage?.persist?.().catch(() => {});
+    if (Date.now() - ((await IDB.snaps()).reduce((m, x) => Math.max(m, x.t), 0)) > 5 * 60 * 1000) await takeSnap(stateNow(), "beim Öffnen");
+  } catch {
+    PS.ok = false; PS.ready = true;
+  }
+  if (PS.dirty) persistNow();
+  updateDataStatus();
+})();
 })();
 </script>
 </body>
