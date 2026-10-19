@@ -462,25 +462,16 @@ a.btn { text-decoration: none; color: inherit; }
       <button class="btn small" type="button" id="dsNew">+ Neues Bild vektorisieren</button>
     </section>
 
-    <details class="panel fold" id="flyPanel" hidden open>
-      <summary><span class="step"><b>✦</b><span class="h2">Schnellstart: Konzert-Flyer</span></span></summary>
-      <p class="hint">Trag die Bands ein, und das Tool baut einen fertigen Flyer im Druck-Look. Danach änderst du alles direkt im Bild.</p>
-      <div class="field"><label for="flTop">Zeile oben <em class="lbl"><em>(optional)</em></em></label><input id="flTop" autocomplete="off" placeholder="z. B. AYC präsentiert"></div>
-      <div class="field"><label for="flHead">Headliner</label><input id="flHead" autocomplete="off" placeholder="z. B. Combust"></div>
-      <div class="field"><label for="flBands">Weitere Bands <em class="lbl"><em>(eine pro Zeile)</em></em></label><textarea id="flBands" style="min-height:70px" placeholder="Steel Deal&#10;Spiderweb"></textarea></div>
-      <div class="row2">
-        <div class="field"><label for="flDate">Datum</label><input id="flDate" autocomplete="off" placeholder="12.11.2026"></div>
-        <div class="field"><label for="flVenue">Ort</label><input id="flVenue" autocomplete="off" value="Oetinger Villa"></div>
-      </div>
-      <div class="row2">
-        <div class="field"><label for="flCity">Stadt</label><input id="flCity" autocomplete="off" value="Darmstadt"></div>
-        <div class="field"><label for="flStyle">Schrift-Stil</label><select id="flStyle"></select></div>
-      </div>
-      <div class="row2">
-        <div class="field"><label for="flPal">Farben</label><select id="flPal"></select></div>
-        <div class="field"><label for="flImg">Motiv</label><select id="flImg"></select></div>
-      </div>
-      <button class="btn primary" type="button" id="flGo">Flyer erstellen</button>
+    <details class="panel fold" id="tplPanel" hidden open>
+      <summary><span class="step"><b>✦</b><span class="h2">Vorlage aus Bild</span></span></summary>
+      <p class="hint">Lade einen Flyer oder ein Plakat hoch. Das Tool erkennt Farben, Textzeilen und Motive und baut daraus eine Komposition, in der du alles verschieben, umschreiben und austauschen kannst.</p>
+      <div class="drop compact" id="tplDrop"><span>Bild hierher ziehen oder <label for="tplFile">wählen</label></span><input type="file" id="tplFile" accept="image/png,image/jpeg,image/webp,image/gif"></div>
+      <img id="tplPrev" alt="Vorlage" hidden style="max-height:180px;object-fit:contain;border:1px solid var(--line);border-radius:8px;background:var(--stage)">
+      <label class="check"><input type="checkbox" id="tplOcr" checked> Texte lesen (Texterkennung)</label>
+      <label class="check"><input type="checkbox" id="tplFonts" checked> Passende Schriften suchen</label>
+      <label class="check"><input type="checkbox" id="tplGhost" checked> Original blass darunterlegen</label>
+      <button class="btn primary" type="button" id="tplGo" disabled>Vorlage erstellen</button>
+      <p class="hint" id="tplMsg" hidden></p>
     </details>
 
     <section class="panel" id="libPanel" hidden aria-labelledby="h-lib">
@@ -1070,7 +1061,7 @@ function renderModes() {
   ["#vecPanel", "#vecSec"].forEach(s => $(s).hidden = !vec);
   ["#fsPanel", "#fsNamePanel", "#fsSec"].forEach(s => $(s).hidden = !fs);
   ["#dsPanel", "#detail", "#boardSec"].forEach(s => $(s).hidden = !ds);
-  ["#libPanel", "#composer", "#flyPanel", "#printPanel"].forEach(s => $(s).hidden = !compose);
+  ["#libPanel", "#composer", "#tplPanel", "#printPanel"].forEach(s => $(s).hidden = !compose);
   if (vec) {
     $("#h-refs").textContent = "Bild zum Vektorisieren";
     $("#dropTitle").textContent = "Bild hierher ziehen";
@@ -1398,6 +1389,46 @@ function fontOptions() {
   return [...Object.entries(BUILTIN_FONTS).map(([k, f]) => ["b:" + k, f.label + " (Flyer-Schrift)"]), ...fontDesigns().map(d => ["g:" + d.id, d.name + " (eigene Schrift)"]), ...Object.entries(SYSFONTS).map(([k, f]) => ["s:" + k, f.label])];
 }
 function textMetrics(l) {
+  const m = lineMetrics(l);
+  if (!l.arc || Math.abs(l.arc) < 1) return m;
+  const A = arcLayout(l, m);
+  return { ...m, arc: A, w: A.w, h: A.h };
+}
+/* Text auf Bogen oder Kreis: l.arc = Winkel in Grad, den die längste Zeile umspannt (+ nach oben gewölbt, − nach unten) */
+function arcLayout(l, m) {
+  const deg = Math.max(-360, Math.min(360, l.arc)), up = deg > 0, th = Math.abs(deg) * Math.PI / 180;
+  const ls = l.ls || 0, g = m.f.kind === "g";
+  if (!g) mctx.font = `${l.weight || 400} ${l.size}px ${m.f.css}`;
+  const lines = m.lines.map(line => {
+    const items = [...line].map(ch => {
+      if (g) { const gl = ch === " " ? null : glyphFor(m.f.glyphs, ch); return { ch, gl, adv: (gl ? gl.w : (m.f.space || 280)) * m.sc + ls }; }
+      return { ch, adv: mctx.measureText(ch).width + ls };
+    });
+    return { items, W: items.reduce((s, it) => s + it.adv, 0) - (items.length ? ls : 0) };
+  });
+  const Wmax = Math.max(1, ...lines.map(x => x.W)), R = Math.max(l.size * 0.6, Wmax / th);
+  const asc = l.size * 0.74, desc = l.size * 0.24, step = g ? l.size : m.lh;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const put = [];
+  lines.forEach((ln, i) => {
+    const r = up ? R - i * step : R + i * step; if (r <= l.size * 0.2) return;
+    let s = -ln.W / 2;
+    for (const it of ln.items) {
+      const a = (s + (it.adv - ls) / 2) / r, sn = Math.sin(a), cs = Math.cos(a);
+      const px = r * sn, py = up ? -r * cs : r * cs, rot = up ? a : -a, cr = Math.cos(rot), sr = Math.sin(rot);
+      const hw = (it.adv - ls) / 2;
+      for (const [u, v] of [[-hw, -asc], [hw, -asc], [-hw, desc], [hw, desc]]) {
+        const X = px + u * cr - v * sr, Y = py + u * sr + v * cr;
+        if (X < x0) x0 = X; if (X > x1) x1 = X; if (Y < y0) y0 = Y; if (Y > y1) y1 = Y;
+      }
+      if (it.ch !== " ") put.push({ ...it, px, py, deg: rot * 180 / Math.PI });
+      s += it.adv;
+    }
+  });
+  if (!put.length) { x0 = y0 = 0; x1 = l.size; y1 = l.size; }
+  return { put, ox: -x0, oy: -y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
+}
+function lineMetrics(l) {
   const f = fontOf(l), lines = String(l.text ?? "").split("\n");
   if (f.kind === "g") {
     const sc = l.size / 1000, lsEm = (l.ls || 0) / sc;
@@ -1432,6 +1463,15 @@ function layerInner(l, exp = false, idx = 0) {
   const { w, h } = layerSize(l);
   if (l.type === "image") return exp ? nestedSvg(l.svg, w, h, "L" + idx + "-") : `<image href="${svgUrl(l.svg)}" width="${rd(w)}" height="${rd(h)}" preserveAspectRatio="xMidYMid meet"/>`;
   const m = textMetrics(l), col = safeColor(l.color);
+  if (m.arc) {
+    const A = m.arc, k = rd(m.sc * 1000) / 1000;
+    const body = A.put.map(p => m.f.kind === "g"
+      ? (p.gl ? `<path transform="translate(${rd(p.px)} ${rd(p.py)}) rotate(${rd(p.deg)}) scale(${k}) translate(${rd(-p.gl.w / 2)} -800)" d="${p.gl.d}"/>` : "")
+      : `<text transform="translate(${rd(p.px)} ${rd(p.py)}) rotate(${rd(p.deg)})" text-anchor="middle">${esc(p.ch)}</text>`).join("");
+    return m.f.kind === "g"
+      ? `<g fill="${col}" fill-rule="nonzero" transform="translate(${rd(A.ox)} ${rd(A.oy)})">${body}</g>`
+      : `<g fill="${col}" font-family="${esc(m.f.css)}" font-size="${rd(l.size)}" font-weight="${l.weight || 400}" transform="translate(${rd(A.ox)} ${rd(A.oy)})">${body}</g>`;
+  }
   if (m.f.kind === "g") {
     let out = `<g fill="${col}" fill-rule="nonzero" transform="scale(${rd(m.sc * 1000) / 1000})">`;
     m.lines.forEach((line, i) => {
@@ -1606,6 +1646,8 @@ function renderInspector() {
         <div class="seg" role="group" aria-label="Ausrichtung">${[["left", "Links"], ["center", "Mitte"], ["right", "Rechts"]].map(([k, n]) => `<button type="button" data-align="${k}" aria-pressed="${l.align === k}">${n}</button>`).join("")}</div>
         ${f.kind === "s" ? `<button class="btn small" type="button" id="insBold" aria-pressed="${(l.weight || 400) >= 700}">Fett</button>` : ""}
       </div>
+      <div class="field"><label for="insArc">Bogen <output id="insArcOut">${arcLabel(l.arc)}</output></label><input type="range" id="insArc" min="-360" max="360" step="5" value="${l.arc || 0}"></div>
+      <div class="seg" role="group" aria-label="Textform" style="flex-wrap:wrap">${[[0, "Gerade"], [140, "Bogen oben"], [-140, "Bogen unten"], [360, "Kreis"]].map(([v, n]) => `<button type="button" data-arc="${v}" aria-pressed="${(l.arc || 0) === v}">${n}</button>`).join("")}</div>
       <button class="btn small" type="button" id="insEdit">Im Bild schreiben</button>
     ` : `
       <div class="field"><label for="insW">Breite</label><input type="number" id="insW" min="8" value="${Math.round(l.w)}"></div>
@@ -1644,12 +1686,16 @@ function renderInspector() {
     box.querySelectorAll("[data-align]").forEach(b => b.onclick = () => { l.align = b.dataset.align; patchLayer(l, true); renderSel(); commit(); box.querySelectorAll("[data-align]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
     on("insBold", "click", () => { l.weight = (l.weight || 400) >= 700 ? 400 : 700; patchLayer(l, true); renderSel(); commit(); $("#insBold").setAttribute("aria-pressed", String(l.weight >= 700)); });
     on("insEdit", "click", () => openInline(l));
+    const setArc = v => { l.arc = Math.max(-360, Math.min(360, +v || 0)); $("#insArc").value = l.arc; $("#insArcOut").textContent = arcLabel(l.arc); box.querySelectorAll("[data-arc]").forEach(x => x.setAttribute("aria-pressed", String(+x.dataset.arc === l.arc))); };
+    on("insArc", "input", live(() => setArc($("#insArc").value))); on("insArc", "change", commit);
+    box.querySelectorAll("[data-arc]").forEach(b => b.onclick = () => { setArc(b.dataset.arc); patchLayer(l, true); renderSel(); commit(); });
   } else {
     on("insW", "input", live(() => l.w = Math.max(8, +$("#insW").value || l.w))); on("insW", "change", commit);
     on("insFlip", "click", () => { l.flip = !l.flip; patchLayer(l, false); renderSel(); commit(); $("#insFlip").setAttribute("aria-pressed", String(l.flip)); });
     on("insCover", "click", () => { const c = curComp(); l.rot = 0; l.cx = c.w / 2; l.cy = c.h / 2; l.w = c.w; if (l.w * l.vh / l.vw < c.h) l.w = c.h * l.vw / l.vh; patchLayer(l, true); renderSel(); commit(); renderInspector(); });
   }
 }
+function arcLabel(a) { a = a || 0; return !a ? "gerade" : Math.abs(a) >= 360 ? "Kreis" : `${Math.abs(a)}° ${a > 0 ? "nach oben" : "nach unten"}`; }
 function moveLayer(l, dir) {
   const arr = curComp().layers, i = arr.indexOf(l), j = i + dir;
   if (j < 0 || j >= arr.length) return;
@@ -1710,7 +1756,7 @@ function renderToolbar() {
   const c = curComp();
   $("#compSel").innerHTML = S.comps.map(x => `<option value="${x.id}" ${x.id === c.id ? "selected" : ""}>${esc(x.name)}</option>`).join("");
   $("#compName").value = c.name;
-  $("#compFormat").innerHTML = Object.entries(FORMATS).map(([k, f]) => `<option value="${k}" ${k === c.format ? "selected" : ""}>${f.label}</option>`).join("");
+  $("#compFormat").innerHTML = (FORMATS[c.format] ? "" : `<option value="" selected>Wie Vorlage (${Math.round(c.w)} × ${Math.round(c.h)})</option>`) + Object.entries(FORMATS).map(([k, f]) => `<option value="${k}" ${k === c.format ? "selected" : ""}>${f.label}</option>`).join("");
   $("#compBg").value = safeColor(c.bg || "#ffffff").slice(0, 7);
   $("#compTransp").checked = !c.bg;
   $("#compBg").disabled = !c.bg;
@@ -1718,7 +1764,7 @@ function renderToolbar() {
 }
 function renderComposer() {
   hist(curComp());
-  renderToolbar(); renderScene(); renderInspector(); renderLayerList(); renderLibrary(); renderPrintPanel(); renderFlyPanel();
+  renderToolbar(); renderScene(); renderInspector(); renderLayerList(); renderLibrary(); renderPrintPanel();
 }
 $("#compSel").onchange = e => { S.compId = e.target.value; C.sel = null; saveComps(); renderComposer(); };
 $("#compNew").onclick = () => { newComp(false); renderComposer(); };
@@ -2596,61 +2642,308 @@ function setPrint(patch, live) {
   $("#prInk2").oninput = e => setPrint({ ink2: e.target.value }, true); $("#prInk2").onchange = e => setPrint({ ink2: e.target.value });
 })();
 
-/* --- Flyer-Vorlage --- */
-const FLY_STYLES = {
-  hardcore: { label: "Hardcore (fett & schmal)", head: "b:grotesk", band: "b:grotesk", top: "b:typewriter", date: "b:grotesk" },
-  fraktur: { label: "Fraktur", head: "b:fraktur", band: "b:grotesk", top: "b:typewriter", date: "b:fraktur" },
-  western: { label: "Western / Zirkus", head: "b:western", band: "b:western", top: "b:typewriter", date: "b:western" },
-  script: { label: "70er-Schreibschrift", head: "b:script", band: "b:script", top: "b:typewriter", date: "b:grotesk" },
-  wide: { label: "Breit & laut", head: "b:wide", band: "b:grotesk", top: "b:typewriter", date: "b:wide" },
-  marker: { label: "Marker / DIY", head: "b:marker", band: "b:marker", top: "b:typewriter", date: "b:marker" },
-};
-function fitText(l, maxW, maxSize) { l.size = maxSize; const m = textMetrics(l); if (m.w > maxW) l.size = Math.max(10, Math.floor(maxSize * maxW / m.w)); return l; }
-function txt(text, font, cx, cy, maxW, maxSize, extra = {}) { return fitText({ id: uid(), type: "text", text, font, size: maxSize, color: "#111111", cx, cy, rot: 0, opacity: 1, ls: 0, align: "center", weight: 400, ...extra }, maxW, maxSize); }
-function deco(id, cx, cy, w, rot = 0) { const it = DECO.find(d => d.id === id), vb = viewBoxOf(it.svg); return { id: uid(), type: "image", name: it.name, mode: "deco", svg: it.svg, vw: vb.w, vh: vb.h, cx, cy, w, rot, opacity: 1, flip: false }; }
-function renderFlyPanel() {
-  const st = $("#flStyle"), pal = $("#flPal"), img = $("#flImg");
-  if (!st.options.length) { st.innerHTML = Object.entries(FLY_STYLES).map(([k, s]) => `<option value="${k}">${s.label}</option>`).join(""); pal.innerHTML = PALETTES.map((p, i) => `<option value="${i}">${p[0]}</option>`).join(""); }
-  const cur = img.value;
-  img.innerHTML = `<option value="">Kein Bild (Sterne als Platzhalter)</option>` + S.designs.filter(d => d.kind === "svg" && d.versions.length).map(d => `<option value="${d.id}">${esc((d.example ? "Beispiel · " : "") + MODES[d.mode].label + ": " + d.name)}</option>`).join("");
-  img.value = cur;
+/* =====================================================================
+   VORLAGE AUS BILD: Plakat in Papierfarbe, Textzeilen und Motive zerlegen
+   ===================================================================== */
+const TPL = { url: null, busy: false, ocr: null };
+const TESS = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+function tplMsg(t) { const m = $("#tplMsg"); m.textContent = t || ""; m.hidden = !t; }
+async function tplSetFile(file) {
+  if (!file || !/^image\/(png|jpeg|webp|gif)$/.test(file.type)) { toast("Nur PNG, JPG, WebP oder GIF."); return; }
+  const r = await fileToRef(file); TPL.url = r.url; TPL.name = file.name.replace(/\.[^.]+$/, "");
+  $("#tplPrev").src = r.url; $("#tplPrev").hidden = false; $("#tplGo").disabled = false; tplMsg("");
 }
-function buildFlyer() {
-  const head = $("#flHead").value.trim() || "HEADLINER";
-  const bands = $("#flBands").value.split("\n").map(s => s.trim()).filter(Boolean);
-  const top = $("#flTop").value.trim(), date = $("#flDate").value.trim() || "TT.MM.JJJJ";
-  const venue = $("#flVenue").value.trim(), city = $("#flCity").value.trim();
-  const style = FLY_STYLES[$("#flStyle").value] || FLY_STYLES.hardcore, [, ink, paper] = PALETTES[+$("#flPal").value] || PALETTES[0];
-  const design = S.designs.find(d => d.id === $("#flImg").value);
-  const W = 1000, H = 1250, L = [];
-  if (top) L.push(txt(top.toUpperCase(), style.top, W / 2, 62, 760, 34));
-  L.push(deco("sparkle", 90, 70, 60, 0), deco("sparkle", 910, 70, 60, 0));
-  const hl = txt(style.head === "b:script" || style.head === "b:fraktur" ? head : head.toUpperCase(), style.head, W / 2, 0, 900, 230);
-  hl.cy = 120 + layerSize(hl).h / 2; L.push(hl);
-  let y = hl.cy + layerSize(hl).h / 2 + 20;
-  const ticketTop = 990, nb = bands.length;
-  const bandSize = nb ? Math.min(design ? 80 : 96, Math.max(38, Math.floor((design ? 220 : 280) / nb))) : 0;
-  const bandsH = nb * bandSize * 1.15;
-  const imgBottom = ticketTop - bandsH - 30;
-  if (design) {
-    const v = design.versions[design.cur], vb = viewBoxOf(v.svg), boxH = Math.max(160, imgBottom - y - 10), boxW = 780;
-    const w = Math.min(boxW, boxH * vb.w / vb.h);
-    L.push({ id: uid(), type: "image", name: design.name, mode: design.mode, svg: v.svg, vw: vb.w, vh: vb.h, cx: W / 2, cy: y + 5 + (w * vb.h / vb.w) / 2, w, rot: 0, opacity: 1, flip: false });
-  } else {
-    const cy = (y + imgBottom) / 2;
-    L.push(deco("sparkles", W / 2, cy, Math.min(520, (imgBottom - y) * 1.4)), deco("dotarc", W / 2, cy + (imgBottom - y) * 0.38, 560));
+$("#tplFile").onchange = e => { tplSetFile(e.target.files[0]); e.target.value = ""; };
+(() => {
+  const d = $("#tplDrop");
+  ["dragenter", "dragover"].forEach(t => d.addEventListener(t, e => { e.preventDefault(); e.stopPropagation(); d.classList.add("over"); }));
+  ["dragleave", "drop"].forEach(t => d.addEventListener(t, e => { e.preventDefault(); e.stopPropagation(); d.classList.remove("over"); }));
+  d.addEventListener("drop", e => tplSetFile(e.dataTransfer?.files?.[0]));
+})();
+async function tplOcrWorker() {
+  if (TPL.ocr) return TPL.ocr;
+  if (!window.Tesseract) await new Promise((res, rej) => { const sc = document.createElement("script"); sc.src = TESS; sc.onload = res; sc.onerror = rej; document.head.append(sc); });
+  TPL.ocr = Tesseract.createWorker(["deu", "eng"], 1).then(async w => { await w.setParameters({ tessedit_pageseg_mode: "7", preserve_interword_spaces: "1" }); return w; });
+  TPL.ocr.catch(() => { TPL.ocr = null; });
+  return TPL.ocr;
+}
+/* Pixel-Analyse: Papier, Druckfarbe, zusammenhängende Flächen */
+function tplScan(img) {
+  const side = 1100, sc = Math.min(1, side / Math.max(img.naturalWidth, img.naturalHeight));
+  const W = Math.max(1, Math.round(img.naturalWidth * sc)), H = Math.max(1, Math.round(img.naturalHeight * sc));
+  const cvs = document.createElement("canvas"); cvs.width = W; cvs.height = H;
+  const g = cvs.getContext("2d", { willReadFrequently: true }); g.fillStyle = "#fff"; g.fillRect(0, 0, W, H); g.drawImage(img, 0, 0, W, H);
+  const px = g.getImageData(0, 0, W, H).data, N = W * H;
+  const border = [[], [], []];
+  for (let x = 0; x < W; x += 2) for (const y of [0, 1, H - 2, H - 1]) { const i = (y * W + x) * 4; for (let c = 0; c < 3; c++) border[c].push(px[i + c]); }
+  for (let y = 0; y < H; y += 2) for (const x of [0, 1, W - 2, W - 1]) { const i = (y * W + x) * 4; for (let c = 0; c < 3; c++) border[c].push(px[i + c]); }
+  const paper = border.map(median);
+  const dist = new Uint8Array(N);
+  for (let i = 0; i < N; i++) { const d = Math.hypot(px[i * 4] - paper[0], px[i * 4 + 1] - paper[1], px[i * 4 + 2] - paper[2]); dist[i] = Math.min(255, d); }
+  const thr = Math.max(40, Math.min(120, otsu(dist)));
+  const ink = new Uint8Array(N); for (let i = 0; i < N; i++) ink[i] = dist[i] >= thr ? 1 : 0;
+  // 8er-Nachbarschaft, Union-Find über Zeilen
+  const lab = new Int32Array(N).fill(-1), par = [];
+  const find = a => { while (par[a] !== a) a = par[a] = par[par[a]]; return a; };
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (!ink[i]) continue;
+    let l = -1;
+    for (const j of [x > 0 ? i - 1 : -1, y > 0 && x > 0 ? i - W - 1 : -1, y > 0 ? i - W : -1, y > 0 && x < W - 1 ? i - W + 1 : -1]) {
+      if (j < 0 || lab[j] < 0) continue;
+      const r = find(lab[j]); if (l < 0) l = r; else if (r !== l) { const a = Math.min(l, r), b = Math.max(l, r); par[b] = a; l = a; }
+    }
+    if (l < 0) { l = par.length; par.push(l); }
+    lab[i] = l;
   }
-  let by = ticketTop - bandsH + bandSize * 0.5;
-  for (const b of bands) { const t = txt(style.band === "b:script" ? b : b.toUpperCase(), style.band, W / 2, by, 860, bandSize); by += bandSize * 1.15; L.push(t); }
-  L.push(deco("ticket", W / 2, ticketTop + 128, 760));
-  const tl = 500 - 380, div = tl + 200 / 600 * 760;
-  L.push(txt(date, style.date, (tl + div) / 2 + 6, ticketTop + 124, div - tl - 40, 70));
-  L.push(txt([venue, city].filter(Boolean).join("\n").toUpperCase() || "ORT", style.date, (div + 870) / 2, ticketTop + 124, 870 - div - 50, 64));
-  const c = { id: uid(), name: head.slice(0, 40), format: "post", w: W, h: H, bg: paper, layers: L, print: { ...PRINT_DEFAULT, ink, paper } };
-  S.comps.push(c); S.compId = c.id; C.sel = null; saveComps(); renderComposer(); renderPrintPanel();
-  toast("Flyer erstellt. Klicke Texte doppelt an, um sie direkt im Bild zu ändern.");
+  const remap = new Int32Array(par.length).fill(-1), comps = [];
+  for (let i = 0; i < N; i++) {
+    if (lab[i] < 0) continue;
+    const r = find(lab[i]); let k = remap[r];
+    if (k < 0) { k = remap[r] = comps.length; comps.push({ k, x0: W, y0: H, x1: 0, y1: 0, n: 0, r: 0, g: 0, b: 0 }); }
+    lab[i] = k; const c = comps[k], x = i % W, y = (i / W) | 0;
+    if (x < c.x0) c.x0 = x; if (x > c.x1) c.x1 = x; if (y < c.y0) c.y0 = y; if (y > c.y1) c.y1 = y;
+    c.n++; c.r += px[i * 4]; c.g += px[i * 4 + 1]; c.b += px[i * 4 + 2];
+  }
+  const st = Math.min(250, thr * 1.8);
+  for (let i = 0; i < N; i++) { if (lab[i] < 0 || dist[i] < st) continue; const c = comps[lab[i]]; c.sn = (c.sn || 0) + 1; c.sr = (c.sr || 0) + px[i * 4]; c.sg = (c.sg || 0) + px[i * 4 + 1]; c.sb = (c.sb || 0) + px[i * 4 + 2]; }
+  for (const c of comps) { c.w = c.x1 - c.x0 + 1; c.h = c.y1 - c.y0 + 1; c.cx = (c.x0 + c.x1) / 2; c.cy = (c.y0 + c.y1) / 2; }
+  // Druckfarben: nur kräftige Pixel (keine Kantenmischung mit dem Papier), k-Means mit k ≤ 4
+  const strong = [];
+  for (let i = 0; i < N; i += 3) if (dist[i] >= st) strong.push([px[i * 4], px[i * 4 + 1], px[i * 4 + 2]]);
+  let inks = [];
+  if (strong.length) {
+    let cen = [strong[0]];
+    while (cen.length < 4) { let bi = -1, bd = 0; for (let i = 0; i < strong.length; i += 7) { const d = Math.min(...cen.map(c => Math.hypot(c[0] - strong[i][0], c[1] - strong[i][1], c[2] - strong[i][2]))); if (d > bd) { bd = d; bi = i; } } if (bd < 60) break; cen.push(strong[bi]); }
+    for (let it = 0; it < 8; it++) {
+      const acc = cen.map(() => [0, 0, 0, 0]);
+      for (const q of strong) { let bj = 0, bd = Infinity; cen.forEach((c, j) => { const d = (c[0] - q[0]) ** 2 + (c[1] - q[1]) ** 2 + (c[2] - q[2]) ** 2; if (d < bd) { bd = d; bj = j; } }); const a = acc[bj]; a[0] += q[0]; a[1] += q[1]; a[2] += q[2]; a[3]++; }
+      cen = acc.filter(a => a[3]).map(a => [a[0] / a[3], a[1] / a[3], a[2] / a[3], a[3]]);
+    }
+    inks = cen.filter(c => c[3] >= strong.length * 0.03).map(c => c.slice(0, 3));
+  }
+  // Einrasten: farbige Flächen auf die Druckfarbe mit dem nächsten Farbton, graue auf die nächste Farbe
+  const sat = c => { const mx = Math.max(...c), mn = Math.min(...c); return mx ? (mx - mn) / mx : 0; };
+  const hue = c => { const [r, g, b] = c, mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn || 1; const h = mx === r ? (g - b) / d : mx === g ? 2 + (b - r) / d : 4 + (r - g) / d; return (h * 60 + 360) % 360; };
+  const snap = rgb => {
+    if (!inks.length) return toHex(rgb);
+    const colored = inks.filter(c => sat(c) > 0.25);
+    if (sat(rgb) > 0.12 && colored.length) { let b = colored[0], bd = Infinity; for (const c of colored) { const d = Math.min(Math.abs(hue(c) - hue(rgb)), 360 - Math.abs(hue(c) - hue(rgb))); if (d < bd) { bd = d; b = c; } } if (bd < 40) return toHex(b); }
+    let b = inks[0], bd = Infinity; for (const c of inks) { const d = Math.hypot(c[0] - rgb[0], c[1] - rgb[1], c[2] - rgb[2]); if (d < bd) { bd = d; b = c; } } return toHex(b);
+  };
+  return { W, H, sc, px, ink, lab, comps, paper, cvs, inks, snap };
 }
-$("#flGo").onclick = buildFlyer;
+/* Buchstaben zu Zeilen gruppieren */
+function tplLines(A) {
+  const { W, H, comps } = A;
+  const cand = comps.filter(c => c.n >= 12 && c.h >= 8 && c.h <= H * 0.22 && c.w <= W * 0.5 && c.n / (c.w * c.h) < 0.92);
+  cand.sort((a, b) => a.x0 - b.x0);
+  const par = new Map(cand.map(c => [c, c]));
+  const find = c => { while (par.get(c) !== c) { par.set(c, par.get(par.get(c))); c = par.get(c); } return c; };
+  for (let i = 0; i < cand.length; i++) {
+    const a = cand[i];
+    for (let j = i + 1; j < cand.length; j++) {
+      const b = cand[j], hm = Math.max(a.h, b.h);
+      if (b.x0 - a.x1 > hm * 0.9) { if (b.x0 - a.x1 > H * 0.25) break; continue; }
+      const ov = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+      if (ov < Math.min(a.h, b.h) * 0.55) continue;
+      const hr = a.h / b.h; if (hr < 0.45 || hr > 2.2) continue;
+      par.set(find(a), find(b));
+    }
+  }
+  const groups = new Map();
+  for (const c of cand) { const r = find(c); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(c); }
+  const lines = [];
+  for (const m of groups.values()) {
+    const hs = m.map(c => c.h).sort((a, b) => a - b), mh = hs[hs.length >> 1];
+    const big = m.filter(c => c.h >= mh * 0.6);
+    if (big.length < 2 || (big.length < 3 && mh < H * 0.035)) continue;
+    const bottoms = big.map(c => c.y1), mb = median(bottoms), dev = median(bottoms.map(y => Math.abs(y - mb)));
+    if (dev > mh * 0.18) continue;
+    const bh = big.map(c => c.h), hdev = median(bh.map(h => Math.abs(h - median(bh))));
+    if (hdev > mh * 0.16) continue;
+    const L = { members: m.sort((a, b) => a.x0 - b.x0), x0: Math.min(...m.map(c => c.x0)), x1: Math.max(...m.map(c => c.x1)), y0: Math.min(...m.map(c => c.y0)), y1: Math.max(...m.map(c => c.y1)), base: mb, capH: hs[Math.min(hs.length - 1, Math.floor(hs.length * 0.85))] };
+    lines.push(L);
+  }
+  // kleine Teile (i-Punkte, Satzzeichen, Anführungszeichen) den Zeilen zuordnen
+  const used = new Set(lines.flatMap(L => L.members));
+  for (const c of comps) {
+    if (used.has(c) || c.n < 3) continue;
+    for (const L of lines) {
+      if (c.h > L.capH * 0.7) continue;
+      if (c.cy < L.y0 - L.capH * 0.45 || c.cy > L.y1 + L.capH * 0.2) continue;
+      if (c.x1 < L.x0 - L.capH * 0.6 || c.x0 > L.x1 + L.capH * 0.6) continue;
+      L.members.push(c); used.add(c);
+      L.x0 = Math.min(L.x0, c.x0); L.x1 = Math.max(L.x1, c.x1); L.y0 = Math.min(L.y0, c.y0); L.y1 = Math.max(L.y1, c.y1);
+      break;
+    }
+  }
+  lines.forEach(L => L.members.sort((a, b) => a.x0 - b.x0));
+  return { lines, used };
+}
+/* Restliche Flächen zu Motiven zusammenfassen */
+function tplRegions(A, used) {
+  const { W, H, lab, comps } = A, N = W * H, keep = new Uint8Array(comps.length);
+  comps.forEach((c, k) => { if (!used.has(c) && c.n >= 4) keep[k] = 1; });
+  const m = new Uint8Array(N); for (let i = 0; i < N; i++) if (lab[i] >= 0 && keep[lab[i]]) m[i] = 1;
+  const r = Math.max(3, Math.round(Math.max(W, H) * 0.012));
+  const dil = (src, horiz) => {
+    const out = new Uint8Array(N), L = horiz ? W : H, M = horiz ? H : W;
+    for (let o = 0; o < M; o++) {
+      let cnt = 0; const at = t => horiz ? o * W + t : t * W + o;
+      for (let t = 0; t < Math.min(L, r); t++) cnt += src[at(t)];
+      for (let t = 0; t < L; t++) { if (t + r < L) cnt += src[at(t + r)]; if (t - r - 1 >= 0) cnt -= src[at(t - r - 1)]; if (cnt) out[at(t)] = 1; }
+    }
+    return out;
+  };
+  const D = dil(dil(m, true), false);
+  const seen = new Uint8Array(N), regs = [], st = [], rid = new Int32Array(N).fill(-1);
+  for (let s0 = 0; s0 < N; s0++) {
+    if (!D[s0] || seen[s0]) continue;
+    let x0 = W, y0 = H, x1 = 0, y1 = 0, n = 0, rr = 0, gg = 0, bb = 0; st.push(s0); seen[s0] = 1;
+    while (st.length) {
+      const i = st.pop(), x = i % W, y = (i / W) | 0;
+      if (m[i]) { rid[i] = regs.length; n++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; rr += A.px[i * 4]; gg += A.px[i * 4 + 1]; bb += A.px[i * 4 + 2]; }
+      if (x > 0 && D[i - 1] && !seen[i - 1]) { seen[i - 1] = 1; st.push(i - 1); }
+      if (x < W - 1 && D[i + 1] && !seen[i + 1]) { seen[i + 1] = 1; st.push(i + 1); }
+      if (y > 0 && D[i - W] && !seen[i - W]) { seen[i - W] = 1; st.push(i - W); }
+      if (y < H - 1 && D[i + W] && !seen[i + W]) { seen[i + W] = 1; st.push(i + W); }
+    }
+    if (n < N * 0.0012 || x1 - x0 < 6 || y1 - y0 < 6) { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (rid[y * W + x] === regs.length) rid[y * W + x] = -1; continue; }
+    regs.push({ x0, y0, x1, y1, n, idx: regs.length });
+  }
+  A.rid = rid;
+  return regs;
+}
+/* Buchstaben einer Zeile als Glyphen im Tool-Format (Grundlinie 800, Versalhöhe 700) */
+function tplGlyphs(A, L, chars, syms) {
+  // Zuordnung Zeichen → Flächen: über die Positionen der Texterkennung, sonst über die Reihenfolge
+  let groups = null;
+  if (syms?.length) {
+    groups = syms.map(y => {
+      const ex = (y.x1 - y.x0) * 0.15, ey = (y.y1 - y.y0) * 0.15;
+      return { ch: y.ch, parts: L.members.filter(c => c.cx >= y.x0 - ex && c.cx <= y.x1 + ex && c.cy >= y.y0 - ey && c.cy <= y.y1 + ey) };
+    }).filter(g => g.parts.length && g.parts.length <= 3);
+  } else {
+    const letters = L.members.filter(c => c.h >= L.capH * 0.3);
+    if (letters.length === chars.length) groups = letters.map((c, k) => ({ ch: chars[k], parts: [c] }));
+  }
+  if (!groups?.length) return null;
+  const s = 700 / Math.max(1, L.capH), out = {};
+  for (const { ch, parts } of groups) {
+    if (out[ch]) continue;
+    const x0 = Math.min(...parts.map(c => c.x0)), x1 = Math.max(...parts.map(c => c.x1)), y0 = Math.min(...parts.map(c => c.y0)), y1 = Math.max(...parts.map(c => c.y1));
+    const ks = new Set(parts.map(c => c.k)), bw = x1 - x0 + 3, bh = y1 - y0 + 3, msk = new Uint8Array(bw * bh);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (ks.has(A.lab[y * A.W + x])) msk[(y - y0 + 1) * bw + (x - x0 + 1)] = 1;
+    const loops = contours(msk, bw, bh).map(P => smoothLoop(P, 0.8, 50)).filter(p => p && Math.abs(loopArea(p)) >= 3);
+    if (loops.length) out[ch] = { d: loops.map(p => loopD(p, s, -s + 40, 800 + (y0 - 1 - L.base) * s, 1)).join(""), w: Math.round((x1 - x0 + 1) * s + 80) };
+  }
+  return out;
+}
+/* Ausschnitt eines Motivs: nur dessen Pixel, der Rest wird Papier */
+function tplRegionCrop(A, img, R, pad) {
+  const c = tplCrop(A, img, R.x0, R.y0, R.x1, R.y1, pad), mw = R.x1 - R.x0 + 1 + 2 * pad, mh = R.y1 - R.y0 + 1 + 2 * pad;
+  const mc = document.createElement("canvas"); mc.width = mw; mc.height = mh;
+  const mg = mc.getContext("2d"), md = mg.createImageData(mw, mh);
+  for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) {
+    const X = R.x0 - pad + x, Y = R.y0 - pad + y; let hit = false;
+    for (let dy = -2; dy <= 2 && !hit; dy++) for (let dx = -2; dx <= 2; dx++) { const xx = X + dx, yy = Y + dy; if (xx >= 0 && yy >= 0 && xx < A.W && yy < A.H && A.rid[yy * A.W + xx] === R.idx) { hit = true; break; } }
+    if (hit) md.data[(y * mw + x) * 4 + 3] = 255;
+  }
+  mg.putImageData(md, 0, 0);
+  const g = c.getContext("2d");
+  g.globalCompositeOperation = "destination-in"; g.drawImage(mc, 0, 0, c.width, c.height);
+  g.globalCompositeOperation = "destination-over"; g.fillStyle = toHex(A.paper); g.fillRect(0, 0, c.width, c.height);
+  g.globalCompositeOperation = "source-over";
+  return c;
+}
+function tplCrop(A, img, x0, y0, x1, y1, pad, scale = 1) {
+  const f = 1 / A.sc, X0 = Math.max(0, (x0 - pad) * f), Y0 = Math.max(0, (y0 - pad) * f);
+  const Wc = Math.min(img.naturalWidth - X0, (x1 - x0 + 1 + 2 * pad) * f), Hc = Math.min(img.naturalHeight - Y0, (y1 - y0 + 1 + 2 * pad) * f);
+  const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(Wc * scale)); c.height = Math.max(1, Math.round(Hc * scale));
+  const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, X0, Y0, Wc, Hc, 0, 0, c.width, c.height);
+  c.ax = X0 * A.sc; c.ay = Y0 * A.sc; c.k = A.sc / scale;   // Crop-Pixel → Analyse-Koordinaten: ax + u * k
+  return c;
+}
+async function tplBuild() {
+  if (!TPL.url || TPL.busy) return;
+  TPL.busy = true; $("#tplGo").disabled = true;
+  const useOcr = $("#tplOcr").checked, useFonts = $("#tplFonts").checked, ghost = $("#tplGhost").checked;
+  try {
+    tplMsg("Bild wird analysiert …"); await new Promise(r => setTimeout(r, 30));
+    const img = await loadImg(TPL.url), A = tplScan(img), { lines: found, used } = tplLines(A);
+    const CW = 1000, k = CW / A.W, CH = Math.round(A.H * k);
+    let worker = null;
+    if (useOcr && found.length) { tplMsg("Texterkennung wird geladen …"); try { worker = await tplOcrWorker(); } catch { toast("Die Texterkennung konnte nicht geladen werden – die Zeilen bekommen Platzhaltertext."); } }
+    const lines = [];
+    let li = 0;
+    for (const L of found) {
+      tplMsg(`Text wird gelesen (${++li} von ${found.length}) …`);
+      L.text = ""; L.conf = 0;
+      if (worker) {
+        const pad = Math.round(L.capH * 0.35), crop = tplCrop(A, img, L.x0, L.y0, L.x1, L.y1, pad, Math.max(1, Math.min(4, 70 * A.sc / L.capH)));
+        try {
+          const r = await worker.recognize(crop, {}, { text: true, blocks: true });
+          L.text = (r.data.text || "").replace(/[#%*~^_|\\<>{}\[\]=]+/g, " ").replace(/\s+/g, " ").trim(); L.conf = r.data.confidence || 0;
+          L.syms = (r.data.blocks || []).flatMap(b => b.paragraphs.flatMap(p => p.lines.flatMap(l => l.words.flatMap(w => w.symbols))))
+            .filter(y => /^[\p{L}\p{N}]$/u.test(y.text)).map(y => ({ ch: y.text, x0: crop.ax + y.bbox.x0 * crop.k, x1: crop.ax + y.bbox.x1 * crop.k, y0: crop.ay + y.bbox.y0 * crop.k, y1: crop.ay + y.bbox.y1 * crop.k }));
+        } catch {}
+        const alnum = [...L.text].filter(ch => /[\p{L}\p{N}]/u.test(ch)).length;
+        if (L.conf < 45 || alnum < Math.max(1, [...L.text].length * 0.6)) { L.members.forEach(m => used.delete(m)); continue; }
+      }
+      lines.push(L);
+    }
+    const regs = tplRegions(A, used);
+    const c = { id: uid(), name: ("Vorlage " + (TPL.name || "")).trim().slice(0, 40), format: "", w: CW, h: CH, bg: toHex(A.paper), layers: [] };
+    if (ghost) c.layers.push({ id: uid(), type: "image", name: "Original (Vorlage)", mode: "deco", svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${A.W} ${A.H}"><image href="${A.cvs.toDataURL("image/jpeg", 0.8)}" width="${A.W}" height="${A.H}"/></svg>`, vw: A.W, vh: A.H, w: CW, cx: CW / 2, cy: CH / 2, rot: 0, opacity: 0.18 });
+    // Motive
+    let ri = 0;
+    for (const R of regs) {
+      tplMsg(`Motive werden nachgezeichnet (${++ri} von ${regs.length}) …`); await new Promise(r => setTimeout(r, 0));
+      const pad = 4, crop = tplRegionCrop(A, img, R, pad);
+      const cimg = await loadImg(crop.toDataURL("image/png"));
+      let svg = null;
+      for (const o of [{ side: 700, minArea: 6 }, { side: 450, minArea: 10 }, { side: 300, minArea: 14 }]) {
+        const tr = vectorize(cimg, { colors: 3, minArea: o.minArea, tol: 0.8, corner: 50, side: o.side, removeBg: true, denoise: true });
+        if (!tr || !tr.layers.length) break;
+        svg = traceToSvg(tr); if (svg.length < 350000) break;
+      }
+      if (!svg) continue;
+      const vb = viewBoxOf(svg), wpx = R.x1 - R.x0 + 1 + 2 * pad;
+      c.layers.push({ id: uid(), type: "image", name: "Motiv " + ri, mode: "grafik", svg, vw: vb.w, vh: vb.h, w: wpx * k, cx: ((R.x0 + R.x1) / 2) * k, cy: ((R.y0 + R.y1) / 2) * k, rot: 0, opacity: 1 });
+    }
+    // Textzeilen
+    let I = null; if (useFonts) { try { I = await fsIndex(); } catch {} }
+    li = 0;
+    for (const L of lines) {
+      tplMsg(`Schrift für Zeile ${++li} von ${lines.length} wird gesucht …`);
+      const text = L.text || "TEXT";
+      const sum = f => L.members.reduce((s, m) => s + (m[f] || 0), 0), sn = sum("sn"), n = sum("n");
+      const col = A.snap(sn > 0 ? [sum("sr") / sn, sum("sg") / sn, sum("sb") / sn] : [sum("r") / n, sum("g") / n, sum("b") / n]);
+      let font = "s:grotesk", fontName = "";
+      if (I && text !== "TEXT") {
+        const gl = tplGlyphs(A, L, [...text].filter(ch => /[\p{L}\p{N}]/u.test(ch)), L.syms);
+        const mine = gl ? Object.keys(gl).filter(ch => I.chars.includes(ch)) : [];
+        if (mine.length >= 2) {
+          const { top } = fsRank(I, gl, mine, 6), mineG = fsGrids(gl, mine);
+          await pool(top, 6, async cand => { try { cand.score = fsScore(await fsFont(cand.id, cand.w), mine, mineG); } catch { cand.score = -1; } });
+          top.sort((a, b) => b.score - a.score);
+          if (top[0]?.score > 0) { try { const d = await fsAdopt(top[0].id, top[0].w); font = "g:" + d.id; fontName = d.name; } catch {} }
+        }
+      }
+      const capC = L.capH * k, size = font.startsWith("g:") ? capC / 0.7 : capC / 0.72;
+      const l = { id: uid(), type: "text", text, font, size: Math.max(6, size), color: col, cx: ((L.x0 + L.x1) / 2) * k, cy: 0, rot: 0, opacity: 1, ls: 0, align: "center", weight: 400 };
+      const m = textMetrics(l), want = (L.x1 - L.x0 + 1) * k, nch = [...text].length;
+      if (nch > 1 && m.w > 0) l.ls = Math.max(-l.size * 0.12, Math.min(l.size * 0.6, (want - m.w) / (nch - 1)));
+      l.cy = font.startsWith("g:") ? L.base * k - 0.3 * l.size : L.base * k - l.size * 0.95 + l.size * 0.6;
+      l.name = fontName;
+      c.layers.push(l);
+    }
+    S.comps.push(c); S.compId = c.id; C.sel = null; saveComps(); renderComposer();
+    tplMsg(`Fertig: ${lines.length} Textzeilen, ${regs.length} Motive. Texte änderst du per Doppelklick, Motive kannst du verschieben, löschen oder in „Entwürfe“ umfärben.`);
+  } catch (e) { console.error(e); tplMsg("Das Bild konnte nicht ausgewertet werden."); }
+  TPL.busy = false; $("#tplGo").disabled = false;
+}
+$("#tplGo").onclick = tplBuild;
 
 /* =====================================================================
    ENTWURF BEARBEITEN: Farben, Hintergrund, Stil
@@ -3132,27 +3425,14 @@ async function fsSearch() {
   if (!mine.length) { fsSetStatus(""); err.textContent = "Es wurden keine Buchstaben oder Ziffern erkannt. Prüfe die Zuordnung im Dialog."; err.hidden = false; return; }
   fsSetStatus("Vergleiche mit " + new Set(I.entries.map(e => e[0])).size + " Schriften …");
   await new Promise(r => setTimeout(r, 20));
-  const ci = mine.map(ch => chars.indexOf(ch)), up = mine.map(ch => FM.pack(FM.grid(gl[ch].d, FM.G1)));
-  const best = new Map();
-  I.entries.forEach(([id, w], e) => {
-    const o = e * I.rec; let s = 0, n = 0;
-    ci.forEach((c, k) => { if (I.bin[o + (c >> 3)] >> (c & 7) & 1) { s += FM.dice(up[k], 0, I.bin, o + 8 + c * FM.BYTES); n++; } });
-    if (!n) return;
-    const sc = s / n * (0.5 + 0.5 * n / ci.length);
-    const cur = best.get(id); if (!cur || cur.s1 < sc) best.set(id, { id, w, s1: sc });
-  });
-  const top = [...best.values()].sort((a, b) => b.s1 - a.s1).slice(0, 36);
-  const G = 40, mineG = Object.fromEntries(mine.map(ch => [ch, FM.blur(FM.grid(gl[ch].d, G), G)]));
+  const { best, top } = fsRank(I, gl, mine, 36), mineG = fsGrids(gl, mine);
   let done = 0, failed = 0;
   fsSetStatus(`Lade die ${top.length} besten Kandidaten …`);
   await pool(top, 6, async c => {
     try {
       const font = await fsFont(c.id, c.w);
       if (run !== FS.run) return;
-      const fg = FontMatch.fontGlyphs(font, mine.join(""));
-      let s = 0, n = 0;
-      for (const ch of mine) { if (!fg[ch]) continue; s += FM.softIoU(mineG[ch], FM.blur(FM.grid(fg[ch].d, G), G)); n++; }
-      c.score = n ? s / n * (0.6 + 0.4 * n / mine.length) : 0;
+      c.score = fsScore(font, mine, mineG);
       c.preview = FontMatch.fontGlyphs(font, [...new Set((FS.text || mine.join("")) + "Aa")].join(""));
       FS.results.push(c);
     } catch { failed++; }
@@ -3165,6 +3445,39 @@ async function fsSearch() {
   if (!FS.results.length) { err.textContent = "Die Schriftdateien konnten nicht geladen werden. Prüfe deine Internetverbindung."; err.hidden = false; fsSetStatus(""); }
   else fsSetStatus(`${FS.results.length} passende Schriften aus ${best.size} geprüften${failed ? ` · ${failed} nicht erreichbar` : ""}`);
   $("#fsWarn").hidden = !(FS.results[0]?.score < 0.6);
+}
+/* Stufe 1: alle Schnitte im Index grob vergleichen (16 × 16 Raster) */
+function fsRank(I, gl, mine, n) {
+  const FM = FontMatch, chars = [...I.chars], ci = mine.map(ch => chars.indexOf(ch)), up = mine.map(ch => FM.pack(FM.grid(gl[ch].d, FM.G1)));
+  const best = new Map();
+  I.entries.forEach(([id, w], e) => {
+    const o = e * I.rec; let s = 0, k = 0;
+    ci.forEach((c, j) => { if (I.bin[o + (c >> 3)] >> (c & 7) & 1) { s += FM.dice(up[j], 0, I.bin, o + 8 + c * FM.BYTES); k++; } });
+    if (!k) return;
+    const sc = s / k * (0.5 + 0.5 * k / ci.length);
+    const cur = best.get(id); if (!cur || cur.s1 < sc) best.set(id, { id, w, s1: sc });
+  });
+  return { best, top: [...best.values()].sort((a, b) => b.s1 - a.s1).slice(0, n) };
+}
+/* Stufe 2: geladene Schrift fein vergleichen (40 × 40, weichgezeichnet) */
+const FS_G = 40;
+const fsGrids = (gl, mine) => Object.fromEntries(mine.map(ch => [ch, FontMatch.blur(FontMatch.grid(gl[ch].d, FS_G), FS_G)]));
+function fsScore(font, mine, mineG) {
+  const FM = FontMatch, fg = FM.fontGlyphs(font, mine.join(""));
+  let s = 0, n = 0;
+  for (const ch of mine) { if (!fg[ch]) continue; s += FM.softIoU(mineG[ch], FM.blur(FM.grid(fg[ch].d, FS_G), FS_G)); n++; }
+  return n ? s / n * (0.6 + 0.4 * n / mine.length) : 0;
+}
+/* Schrift als Entwurf speichern (oder den vorhandenen Entwurf zurückgeben) */
+async function fsAdopt(id, w) {
+  let d = S.designs.find(x => x.src === "google" && x.gid === id && x.gw === w);
+  if (d) return d;
+  const I = await fsIndex(), f = I.fonts[id] || [id], font = await fsFont(id, w);
+  const glyphs = FontMatch.fontGlyphs(font, I.chars + FS_EXTRA);
+  d = { id: uid(), kind: "font", mode: "font", src: "google", gid: id, gw: w, name: (f[0] + (w !== 400 ? " " + wName(w) : "")).slice(0, 40), brief: { name: f[0], desc: "Google Fonts", chips: [] }, cur: 0,
+    versions: [{ glyphs, note: `Freie Schrift aus Google Fonts (${wName(w)}, ${Object.keys(glyphs).length} Zeichen). Lizenz: siehe fonts.google.com.`, at: Date.now() }] };
+  S.designs.unshift(d); save();
+  return d;
 }
 async function pool(items, k, fn) {
   let next = 0;
@@ -3184,11 +3497,7 @@ function fsCard(c, I) {
     if (d) { goCompose(); addTextLayer("g:" + d.id, fsSample()); return; }
     btn.disabled = true; btn.textContent = "Wird geladen …";
     try {
-      const font = await fsFont(c.id, c.w);
-      const glyphs = FontMatch.fontGlyphs(font, I.chars + FS_EXTRA);
-      d = { id: uid(), kind: "font", mode: "font", src: "google", gid: c.id, gw: c.w, name: (f[0] + (c.w !== 400 ? " " + wName(c.w) : "")).slice(0, 40), brief: { name: f[0], desc: "Google Fonts", chips: [] }, cur: 0,
-        versions: [{ glyphs, note: `Freie Schrift aus Google Fonts (${wName(c.w)}, ${Object.keys(glyphs).length} Zeichen). Lizenz: siehe fonts.google.com.`, at: Date.now() }] };
-      S.designs.unshift(d); save(); renderIntro();
+      d = await fsAdopt(c.id, c.w); renderIntro();
       toast(`${d.name} übernommen – du findest sie unter Entwürfe und in der Komposition.`);
       btn.textContent = "In Komposition";
     } catch { toast("Die Schrift konnte nicht geladen werden."); btn.textContent = "Übernehmen"; }
