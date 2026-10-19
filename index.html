@@ -236,7 +236,7 @@ pre.code { margin: 0; max-height: 180px; overflow: auto; background: var(--stage
 #gxCanvas { display: block; max-width: 100%; max-height: 74vh; width: auto; height: auto; cursor: crosshair; touch-action: none; image-rendering: auto; }
 
 /* Flyer */
-#scene.dragging #lay { filter: none; }
+#scene.dragging #lay g[filter] { filter: none; }
 .palbtns { display: flex; flex-wrap: wrap; gap: 6px; }
 .palbtn { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--line); display: grid; place-items: center; padding: 0; }
 .palbtn i { width: 16px; height: 16px; border-radius: 50%; display: block; }
@@ -491,6 +491,8 @@ a.btn { text-decoration: none; color: inherit; }
       <label class="check"><input type="checkbox" id="prOn"> Wie gedruckt aussehen lassen (Sieb-/Risodruck)</label>
       <div id="prBody" class="prbody">
         <p class="hint">Alles Dunkle druckt in der Druckfarbe, Weiß wird zu Papier. Farbige Elemente werden je nach Helligkeit voll gedruckt oder gerastert.</p>
+        <label class="check"><input type="checkbox" id="prOwn"> Eigene Farben behalten (mehrfarbig drucken)</label>
+        <p class="hint" style="margin-top:-6px">Einzelne Elemente kannst du auch rechts mit „Farbe im Druck-Look behalten“ bunt lassen.</p>
         <div class="field"><span class="lbl">Farbkombination</span><div class="palbtns" id="prPal"></div></div>
         <div class="rowinline">
           <div class="field"><label for="prInk">Druckfarbe</label><input type="color" id="prInk"></div>
@@ -1415,7 +1417,7 @@ const WARPS = { none: "Aus", arch: "Bogen", bulge: "Wölbung", wave: "Welle", fl
 const TG = new Map();
 function textGeom(l) {
   const f = fontOf(l);
-  const key = JSON.stringify([f.name, l.text, l.size, l.ls, l.arc, l.align, l.weight, l.sx, l.sy, l.lead, l.just, l.warp, l.wamt, l.ow, l.hollow, l.shm, l.shx, l.shy]);
+  const key = JSON.stringify([f.name, l.text, l.size, l.ls, l.arc, l.align, l.weight, l.sx, l.sy, l.lead, l.just, l.warp, l.wamt, l.ow, l.hollow, l.shm, l.shx, l.shy, l.multi, l.multi ? (l.mcols || []).length : 0]);
   let G = TG.get(key);
   if (!G) { G = buildTextGeom(l, f); if (TG.size > 400) TG.clear(); TG.set(key, G); }
   return G;
@@ -1435,6 +1437,10 @@ function buildTextGeom(l, f) {
   const ow = l.hollow ? Math.max(size * 0.02, (l.ow || 0) * size / 100) : (l.ow || 0) * size / 100, half = ow / 2;
   const sh = l.shm && l.shm !== "none" ? { dx: (l.shx ?? 5) * size / 100, dy: (l.shy ?? 5) * size / 100 } : null;
   let w0, h0, parts = [], sys = null;
+  // Farbfolge: jedes sichtbare Zeichen (ohne Leerzeichen) bekommt einen Farbplatz
+  const nCol = l.multi && f.kind === "g" ? Math.max(2, (l.mcols || []).length) : 0, slots = [];
+  if (nCol) { let ci = 0, wi = 0; lines.forEach((line, li) => { let inWord = false; for (const ch of line) { if (ch === " ") { if (inWord) wi++; inWord = false; continue; } inWord = true; slots.push((l.multi === "char" ? ci : l.multi === "word" ? wi : li) % nCol); ci++; } if (inWord) wi++; }); }
+  let si = 0;
   if (f.kind !== "g") {
     mctx.font = `${l.weight || 400} ${size}px ${f.css}`;
     const ws = lines.map(line => mctx.measureText(line).width + Math.max(0, [...line].length - 1) * (l.ls || 0)), lh = size * 1.2 * lead;
@@ -1444,20 +1450,20 @@ function buildTextGeom(l, f) {
   } else if (arc) {
     const A = arcLayout(l, { f, lines, sc, lh: size });
     for (const q of A.put) {
-      if (!q.gl) continue;
+      const slot = slots[si++]; if (!q.gl) continue;
       const a = q.deg * Math.PI / 180, cs = Math.cos(a) * sc, sn = Math.sin(a) * sc, tx = -q.gl.w / 2, ty = -800;
-      parts.push([q.gl.d, cs, sn, -sn, cs, A.ox + q.px + cs * tx - sn * ty, A.oy + q.py + sn * tx + cs * ty]);
+      parts.push([q.gl.d, cs, sn, -sn, cs, A.ox + q.px + cs * tx - sn * ty, A.oy + q.py + sn * tx + cs * ty, slot]);
     }
     w0 = A.w; h0 = A.h;
   } else {
     const lsEm = (l.ls || 0) / sc, sp = f.space || 280;
-    const rows = lines.map(line => { const items = []; let x = 0; for (const ch of line) { const gl = ch === " " ? null : glyphFor(f.glyphs, ch); items.push({ gl, x }); x += (gl ? gl.w : sp) + lsEm; } return { items, wEm: Math.max(0, x - (items.length ? lsEm : 0)) }; });
+    const rows = lines.map(line => { const items = []; let x = 0; for (const ch of line) { const gl = ch === " " ? null : glyphFor(f.glyphs, ch); items.push({ gl, x, slot: ch === " " ? null : slots[si++] }); x += (gl ? gl.w : sp) + lsEm; } return { items, wEm: Math.max(0, x - (items.length ? lsEm : 0)) }; });
     const maxEm = Math.max(300, ...rows.map(r => r.wEm)), just = l.just && rows.length > 1 ? l.just : null;
     let y = 0, last = 1000;
     rows.forEach(r => {
       const fx = just && r.wEm > 0 ? maxEm / r.wEm : 1, fy = just === "p" ? fx : 1;
       const x0 = just ? 0 : l.align === "left" ? 0 : l.align === "right" ? maxEm - r.wEm : (maxEm - r.wEm) / 2;
-      for (const it of r.items) if (it.gl) parts.push([it.gl.d, sc * fx, 0, 0, sc * fy, sc * (x0 + it.x * fx), sc * y]);
+      for (const it of r.items) if (it.gl) parts.push([it.gl.d, sc * fx, 0, 0, sc * fy, sc * (x0 + it.x * fx), sc * y, it.slot]);
       last = 1000 * fy; y += last * lead;
     });
     w0 = maxEm * sc; h0 = (y - last * lead + last) * sc;
@@ -1473,12 +1479,13 @@ function buildTextGeom(l, f) {
     flag: (X, Y) => [X, Y + A * H * 0.35 * (X / W) * Math.sin(Math.PI * 2.2 * X / W)],
     rise: (X, Y) => [X, H + (Y - H) * (1 + A * 0.9 * (X / W - 0.5))]
   }[l.warp];
-  const d = parts.map(([pd, a, b, c, dd, e, ff]) => mapPath(pd, (x, y) => {
+  const pieces = parts.map(([pd, a, b, c, dd, e, ff]) => mapPath(pd, (x, y) => {
     let X = (a * x + c * y + e) * sx, Y = (b * x + dd * y + ff) * sy;
     if (warp) [X, Y] = warp(X, Y);
     return [X + ex, Y + ey];
-  })).join("");
-  return { f, lines, d, sys, w, h, ex, ey, sx, sy, sh, ow };
+  }));
+  const ds = nCol ? Array.from({ length: nCol }, (_, k) => pieces.filter((_, i) => parts[i][7] === k).join("")) : null;
+  return { f, lines, d: pieces.join(""), ds, sys, w, h, ex, ey, sx, sy, sh, ow };
 }
 /* Text auf Bogen oder Kreis: l.arc = Winkel in Grad, den die längste Zeile umspannt (+ nach oben gewölbt, − nach unten) */
 function arcLayout(l, m) {
@@ -1557,11 +1564,15 @@ function textInner(l, colOverride) {
     const N = l.shm === "3d" ? Math.min(40, Math.max(2, Math.ceil(Math.max(Math.abs(G.sh.dx), Math.abs(G.sh.dy)) / Math.max(1, l.size * 0.012)))) : 1;
     for (let k = N; k >= 1; k--) out += `<g transform="translate(${rd(G.sh.dx * k / N)} ${rd(G.sh.dy * k / N)})">${body(shc, strokeA(shc), false)}</g>`;
   }
+  if (G.ds && !colOverride) {
+    const cols = l.mcols || [];
+    return out + G.ds.map((d, k) => { const ck = safeColor(cols[k] || l.color); return d ? `<path d="${d}" fill="${l.hollow ? "none" : ck}" fill-rule="nonzero" ${l.hollow ? `stroke="${ck}" stroke-width="${rd(G.ow)}" stroke-linejoin="round"` : G.ow ? `stroke="${oc}" stroke-width="${rd(G.ow)}" stroke-linejoin="round" paint-order="stroke"` : ""}/>` : ""; }).join("");
+  }
   return out + body(fillMain, l.hollow ? `stroke="${oc}" stroke-width="${rd(G.ow)}" stroke-linejoin="round"` : strokeA(oc), true);
 }
 /* Enger Rahmen: Bereich der Ebene, der wirklich sichtbar ist (lokale Koordinaten, gemessen an einem kleinen Raster) */
 const INK = new Map();
-const inkKey = l => { const { w, h } = layerSize(l); return JSON.stringify([l.type, l.type === "text" ? [fontOf(l).name, l.sx, l.sy, l.lead, l.just, l.warp, l.wamt, l.ow, l.hollow, l.shm, l.shx, l.shy] : 0, l.svg?.length, l.svg?.slice(0, 200), l.text, l.font, l.size, l.ls, l.arc, l.align, l.weight, l.shape, l.sw, l.gap, l.r, l.n, l.fill, rd(w), rd(h)]); };
+const inkKey = l => { const { w, h } = layerSize(l); return JSON.stringify([l.type, l.type === "text" ? [fontOf(l).name, l.multi, l.sx, l.sy, l.lead, l.just, l.warp, l.wamt, l.ow, l.hollow, l.shm, l.shx, l.shy] : 0, l.svg?.length, l.svg?.slice(0, 200), l.text, l.font, l.size, l.ls, l.arc, l.align, l.weight, l.shape, l.sw, l.gap, l.r, l.n, l.fill, rd(w), rd(h)]); };
 function inkBox(l) {
   const { w, h } = layerSize(l), e = INK.get(inkKey(l));
   return e && e.box ? e.box : { x: 0, y: 0, w, h };
@@ -1659,11 +1670,21 @@ function wrapMasks(c, l, inner) {
   if ((l.cutIds || []).some(id => helperOf(c, id))) inner = `<g mask="url(#ct-${l.id})">${inner}</g>`;
   return inner;
 }
+/* Ebenen in Gruppen zeichnen: im Druck-Look je nach Ebene mit Druckfarbe (prt) oder eigenen Farben (prtc), Reihenfolge bleibt erhalten */
+function layerRuns(c, html) {
+  if (!c.print?.on) return c.layers.map(html).join("");
+  let out = "", cur = null;
+  for (const l of c.layers) {
+    const f = c.print.own || l.keepColor ? "prtc" : "prt";
+    if (f !== cur) { if (cur) out += "</g>"; out += `<g filter="url(#${f})">`; cur = f; }
+    out += html(l);
+  }
+  return out + (cur ? "</g>" : "");
+}
 function compSvg(c) {
   let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${c.w} ${c.h}"><defs>${printDefs(c)}${maskDefs(c, true)}</defs>`;
   s += bgMarkup(c, false);
-  s += `<g${c.print?.on ? ' filter="url(#prt)"' : ""}>`;
-  c.layers.forEach((l, i) => { if (!l.helper) s += wrapMasks(c, l, `<g transform="${transformOf(l)}" opacity="${l.opacity ?? 1}">${layerInner(l, true, i)}</g>`); });
+  s += "<g>" + layerRuns(c, l => l.helper ? "" : wrapMasks(c, l, `<g transform="${transformOf(l)}" opacity="${l.opacity ?? 1}">${layerInner(l, true, c.layers.indexOf(l))}</g>`));
   return s + "</g></svg>";
 }
 /* zwei ausgewählte Ebenen verbinden: obere wird Maske bzw. Aussparung der unteren */
@@ -1689,8 +1710,8 @@ function renderScene() {
   const c = curComp();
   scene.setAttribute("viewBox", `0 0 ${c.w} ${c.h}`);
   let html = `<defs><pattern id="chk" width="40" height="40" patternUnits="userSpaceOnUse"><rect width="40" height="40" fill="#ffffff"/><rect width="20" height="20" fill="#dde1e7"/><rect x="20" y="20" width="20" height="20" fill="#dde1e7"/></pattern>${printDefs(c)}${maskDefs(c, false)}</defs>`;
-  html += bgMarkup(c, true) + `<g id="lay"${c.print?.on ? ' filter="url(#prt)"' : ""}>`;
-  for (const l of c.layers) html += wrapMasks(c, l, `<g data-id="${l.id}" transform="${transformOf(l)}" opacity="${(l.opacity ?? 1) * (l.helper ? 0 : 1)}" ${l.locked ? 'pointer-events="none"' : 'style="cursor:move"'}>${layerInner(l)}${l.locked ? "" : hitRect(l)}</g>`);
+  html += bgMarkup(c, true) + `<g id="lay">`;
+  html += layerRuns(c, l => wrapMasks(c, l, `<g data-id="${l.id}" transform="${transformOf(l)}" opacity="${(l.opacity ?? 1) * (l.helper ? 0 : 1)}" ${l.locked ? 'pointer-events="none"' : 'style="cursor:move"'}>${layerInner(l)}${l.locked ? "" : hitRect(l)}</g>`));
   html += `</g><g id="guides" pointer-events="none"></g><g id="selg"></g>`;
   scene.innerHTML = html;
   renderSel(); refreshInk(c.layers);
@@ -1902,7 +1923,7 @@ function renderInspector() {
   }
   const isText = l.type === "text", isShape = l.type === "shape";
   const f = isText ? fontOf(l) : null, SP = isShape ? SHAPES[l.shape] || {} : null;
-  const linked = l.helper || l.maskId || l.cutIds?.length;
+  const linked = l.helper || l.maskId || l.cutIds?.length, prOn = curComp().print?.on;
   box.innerHTML = `
     <h4>${isText ? "Text" : esc(l.name || "Bild")}</h4>
     ${linked ? `<div class="notice" style="margin:0"><span>${l.helper === "mask" ? "Dient als Maske: das Element darunter ist nur hier sichtbar." : l.helper === "cut" ? "Wird aus dem Element darunter ausgeschnitten." : l.maskId && l.cutIds?.length ? "Hat eine Maske und eine Aussparung." : l.maskId ? "Ist in eine Form eingepasst." : "Hat eine Aussparung."}</span><button type="button" class="btn small" id="insUnlink">Lösen</button></div>` : ""}
@@ -1931,6 +1952,8 @@ function renderInspector() {
         <div class="field" style="flex:0 0 auto"><label for="insColor">Farbe</label><input type="color" id="insColor" value="${safeColor(l.color).slice(0, 7)}"></div>
         <div class="field"><label for="insLs">Laufweite</label><input type="range" id="insLs" min="-20" max="80" value="${l.ls || 0}"></div>
       </div>
+      ${f.kind === "g" ? `<div class="field"><span class="lbl">Mehrfarbig</span><div class="seg" role="group" aria-label="Mehrfarbig" style="flex-wrap:wrap">${[["", "Aus"], ["char", "Buchstaben"], ["word", "Wörter"], ["line", "Zeilen"]].map(([k, n]) => `<button type="button" data-multi="${k}" aria-pressed="${(l.multi || "") === k}">${n}</button>`).join("")}</div>
+        ${l.multi ? `<div class="rowinline" style="flex-wrap:wrap;gap:6px">${(l.mcols || []).map((c2, i) => `<input type="color" data-mc="${i}" value="${safeColor(c2).slice(0, 7)}" aria-label="Farbe ${i + 1}">`).join("")}<button class="btn small" type="button" id="mcAdd" ${(l.mcols || []).length >= 6 ? "disabled" : ""}>+</button><button class="btn small" type="button" id="mcDel" ${(l.mcols || []).length <= 2 ? "disabled" : ""}>−</button></div>` : ""}</div>` : ""}
       <div class="rowinline" style="flex-wrap:wrap">
         <div class="seg" role="group" aria-label="Ausrichtung">${[["left", "Links"], ["center", "Mitte"], ["right", "Rechts"]].map(([k, n]) => `<button type="button" data-align="${k}" aria-pressed="${l.align === k}">${n}</button>`).join("")}</div>
         ${f.kind === "s" ? `<button class="btn small" type="button" id="insBold" aria-pressed="${(l.weight || 400) >= 700}">Fett</button>` : ""}
@@ -1987,6 +2010,7 @@ function renderInspector() {
         <button class="btn small" type="button" id="insCrop" title="Leeren Rand um das Motiv entfernen, damit der Rahmen eng anliegt">Rand abschneiden</button>
         <button class="btn small" type="button" id="insDeco">Als Deko speichern</button>
       </div>`}
+    ${prOn ? `<label class="check"><input type="checkbox" id="insKeep" ${l.keepColor || curComp().print.own ? "checked" : ""} ${curComp().print.own ? "disabled" : ""}> Farbe im Druck-Look behalten</label>` : ""}
     <div class="rowinline">
       <div class="field"><label for="insOp">Deckkraft</label><input type="range" id="insOp" min="0" max="100" value="${Math.round((l.opacity ?? 1) * 100)}"></div>
       <div class="field" style="flex:0 0 72px"><label for="insRot">Drehung</label><input type="number" id="insRot" min="-180" max="180" value="${Math.round(l.rot || 0)}"></div>
@@ -2010,6 +2034,7 @@ function renderInspector() {
   on("insDel", "click", deleteSel);
   on("insDeco", "click", () => saveDeco(l));
   on("insUnlink", "click", () => unlinkHelper(l));
+  on("insKeep", "change", () => { l.keepColor = $("#insKeep").checked; renderScene(); commit(); });
   if (l.src) {
     $("#insPh")?.addEventListener("toggle", e => { C.phOpen = e.target.open; });
     let phT = 0, phRun = 0;
@@ -2041,6 +2066,15 @@ function renderInspector() {
     box.querySelectorAll("[data-align]").forEach(b => b.onclick = () => { l.align = b.dataset.align; patchLayer(l, true); renderSel(); commit(); box.querySelectorAll("[data-align]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
     on("insBold", "click", () => { l.weight = (l.weight || 400) >= 700 ? 400 : 700; patchLayer(l, true); renderSel(); commit(); $("#insBold").setAttribute("aria-pressed", String(l.weight >= 700)); });
     on("insEdit", "click", () => openInline(l));
+    box.querySelectorAll("[data-multi]").forEach(b => b.onclick = () => {
+      l.multi = b.dataset.multi || null;
+      if (l.multi && !(l.mcols?.length >= 2)) l.mcols = [safeColor(l.color).slice(0, 7), "#c1272d", "#1f5fbf"];
+      if (l.multi && curComp().print?.on) l.keepColor = true;
+      patchLayer(l, true); renderSel(); commit(); renderInspector();
+    });
+    box.querySelectorAll("[data-mc]").forEach(inp => { inp.oninput = () => { l.mcols[+inp.dataset.mc] = inp.value; patchLayer(l, true); }; inp.onchange = commit; });
+    on("mcAdd", "click", () => { l.mcols.push(["#f2b134", "#0f6f68", "#7a3db8", "#e2732e"][l.mcols.length % 4]); patchLayer(l, true); commit(); renderInspector(); });
+    on("mcDel", "click", () => { l.mcols.pop(); patchLayer(l, true); commit(); renderInspector(); });
     $("#insFx").addEventListener("toggle", e => { C.fxOpen = e.target.open; });
     const fxNum = (id, key, unit = "") => { on(id, "input", live(() => { l[key] = +$("#" + id).value; const o = $("#" + id + "Out"); if (o) o.textContent = l[key] + unit; })); on(id, "change", commit); };
     fxNum("fxSx", "sx", " %"); fxNum("fxSy", "sy", " %"); fxNum("fxLead", "lead", " %"); fxNum("fxWamt", "wamt"); fxNum("fxOw", "ow"); fxNum("fxShx", "shx"); fxNum("fxShy", "shy");
@@ -3029,15 +3063,17 @@ function printDefs(c) {
   const P = c.print; if (!P?.on) return "";
   const W = c.w, H = c.h;
   let f = printFilter("prt", 0, 0, W, H, P);
+  if (P.own || c.layers.some(l => l.keepColor)) f += printFilter("prtc", 0, 0, W, H, P, true);
   if (P.paperTex > 0) f += `<filter id="ptx" filterUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="0.03 0.05" numOctaves="4" seed="5" result="pn"/><feColorMatrix in="pn" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1.8 0 0 0 -0.7" result="pa"/><feFlood flood-color="#000"/><feComposite in2="pa" operator="in"/></filter>`;
   return f;
 }
-function printFilter(id, X0, Y0, W, H, P) {
+function printFilter(id, X0, Y0, W, H, P, own) {
   const k = 1 + P.hard * 16;
   let f = `<filter id="${id}" filterUnits="userSpaceOnUse" x="${rd(X0)}" y="${rd(Y0)}" width="${rd(W)}" height="${rd(H)}" color-interpolation-filters="sRGB">`;
   /* Deckung: alles außer sehr hellen Tönen druckt voll, Weiß wird Papier */
   const F = 1.7 + (P.light || 0) * 4;
-  f += `<feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ${rd(-0.2126 * F)} ${rd(-0.7152 * F)} ${rd(-0.0722 * F)} 0 ${rd(F)}" result="c0"/><feComposite in="c0" in2="SourceAlpha" operator="in" result="cov"/>`;
+  if (own) f += `<feComposite in="SourceAlpha" in2="SourceAlpha" operator="in" result="cov"/>`;  // eigene Farben: Deckung = Sichtbarkeit
+  else f += `<feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ${rd(-0.2126 * F)} ${rd(-0.7152 * F)} ${rd(-0.0722 * F)} 0 ${rd(F)}" result="c0"/><feComposite in="c0" in2="SourceAlpha" operator="in" result="cov"/>`;
   let A = "cov";
   if (P.rough > 0) { f += `<feTurbulence type="fractalNoise" baseFrequency="0.045" numOctaves="2" seed="3" result="rn"/><feDisplacementMap in="${A}" in2="rn" scale="${rd(P.rough * 9)}" xChannelSelector="R" yChannelSelector="G" result="rough"/>`; A = "rough"; }
   if (P.halftone > 0) {
@@ -3048,6 +3084,7 @@ function printFilter(id, X0, Y0, W, H, P) {
   if (P.grain > 0) { f += `<feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="1" seed="7" result="gn"/><feColorMatrix in="gn" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 -0.3" result="ga"/><feComposite in="${A}" in2="ga" operator="arithmetic" k2="1" k3="${rd(-P.grain * 1.3)}" result="gr"/>`; A = "gr"; }
   f += `<feComponentTransfer in="${A}" result="hard"><feFuncA type="linear" slope="${rd(k)}" intercept="${rd(-(k - 1) / 2)}"/></feComponentTransfer>`; A = "hard";
   if (P.dust > 0) { const t = 0.8 - P.dust * 0.12; f += `<feTurbulence type="fractalNoise" baseFrequency="0.6" numOctaves="1" seed="11" result="dn"/><feColorMatrix in="dn" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 30 0 0 0 ${rd(-30 * t)}" result="da"/><feComposite in="da" in2="${A}" operator="over" result="dusty"/>`; A = "dusty"; }
+  if (own) { f += `<feColorMatrix in="SourceGraphic" type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 0 1" result="sg"/><feComposite in="sg" in2="${A}" operator="in" result="p1"/></filter>`; return f; }
   f += `<feFlood flood-color="${safeColor(P.ink)}" result="ink"/><feComposite in="ink" in2="${A}" operator="in" result="p1"/>`;
   if (P.offset > 0) f += `<feFlood flood-color="${safeColor(P.ink2, "#1b1f3b")}"/><feComposite in2="${A}" operator="in"/><feOffset dx="${rd(P.offset * 14)}" dy="${rd(P.offset * 9)}" result="p2"/><feMerge><feMergeNode in="p2"/><feMergeNode in="p1"/></feMerge>`;
   f += `</filter>`;
@@ -3308,7 +3345,7 @@ function addSavedDeco(dd) {
 /* --- Druck-Look-Panel --- */
 function renderPrintPanel() {
   const c = curComp(), P = c.print || { ...PRINT_DEFAULT, on: false };
-  $("#prOn").checked = !!P.on;
+  $("#prOn").checked = !!P.on; $("#prOwn").checked = !!P.own;
   $("#prBody").hidden = !P.on;
   $("#prInk").value = safeColor(P.ink).slice(0, 7); $("#prPaper").value = safeColor(P.paper, "#ffffff").slice(0, 7); $("#prInk2").value = safeColor(P.ink2, "#1b1f3b").slice(0, 7);
   for (const [k] of PRINT_SLIDERS) { const el = $("#pr_" + k); if (el && document.activeElement !== el) el.value = Math.round((P[k] || 0) * 100); }
@@ -3316,6 +3353,7 @@ function renderPrintPanel() {
 }
 let prRaf = 0;
 const prLive = () => { cancelAnimationFrame(prRaf); prRaf = requestAnimationFrame(renderScene); };
+$("#prOwn").onchange = e => setPrint({ own: e.target.checked });
 function setPrint(patch, live) {
   const c = curComp(); c.print = { ...(c.print || PRINT_DEFAULT), ...patch };
   if (live) prLive(); else { renderScene(); commit(); renderPrintPanel(); }
