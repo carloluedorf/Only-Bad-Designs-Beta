@@ -469,7 +469,9 @@ a.btn { text-decoration: none; color: inherit; }
       <img id="tplPrev" alt="Vorlage" hidden style="max-height:180px;object-fit:contain;border:1px solid var(--line);border-radius:8px;background:var(--stage)">
       <label class="check"><input type="checkbox" id="tplOcr" checked> Texte lesen (Texterkennung)</label>
       <label class="check"><input type="checkbox" id="tplFonts" checked> Passende Schriften suchen</label>
+      <label class="check"><input type="checkbox" id="tplShapes" checked> Rahmen, Linien &amp; Formen erkennen</label>
       <label class="check"><input type="checkbox" id="tplGhost" checked> Original blass darunterlegen</label>
+      <div class="field"><label for="tplFormat">Format</label><select id="tplFormat"><option value="">Wie Vorlage</option><option value="sq">Quadrat 1:1</option><option value="post">Hochformat 4:5</option><option value="story">Story 9:16</option><option value="a4">A4 hoch</option><option value="a4q">A4 quer</option><option value="wide">Breit 16:9</option></select></div>
       <button class="btn primary" type="button" id="tplGo" disabled>Vorlage erstellen</button>
       <p class="hint" id="tplMsg" hidden></p>
     </details>
@@ -1441,7 +1443,7 @@ function lineMetrics(l) {
   const lh = l.size * 1.2;
   return { f, lines, ws, w: Math.max(l.size * 0.6, ...ws), h: lines.length * lh, lh };
 }
-function layerSize(l) { if (l.type === "image") return { w: l.w, h: l.w * l.vh / l.vw }; const m = textMetrics(l); return { w: m.w, h: m.h }; }
+function layerSize(l) { if (l.type === "image") return { w: l.w, h: l.w * l.vh / l.vw }; if (l.type === "shape") return { w: l.w, h: l.h }; const m = textMetrics(l); return { w: m.w, h: m.h }; }
 function transformOf(l) {
   const { w, h } = layerSize(l);
   return `translate(${rd(l.cx)} ${rd(l.cy)}) rotate(${rd(l.rot || 0)}) scale(${l.flip ? -1 : 1} 1) translate(${rd(-w / 2)} ${rd(-h / 2)})`;
@@ -1461,6 +1463,7 @@ function nestedSvg(svg, w, h, p) {
 }
 function layerInner(l, exp = false, idx = 0) {
   const { w, h } = layerSize(l);
+  if (l.type === "shape") return shapeInner(l, w, h);
   if (l.type === "image") return exp ? nestedSvg(l.svg, w, h, "L" + idx + "-") : `<image href="${svgUrl(l.svg)}" width="${rd(w)}" height="${rd(h)}" preserveAspectRatio="xMidYMid meet"/>`;
   const m = textMetrics(l), col = safeColor(l.color);
   if (m.arc) {
@@ -1547,7 +1550,7 @@ scene.addEventListener("pointerdown", e => {
   const h = e.target.closest("[data-h]");
   if (h && selLayer()) {
     const l = selLayer();
-    C.drag = { kind: h.dataset.h, l, p0: p, d0: Math.hypot(p.x - l.cx, p.y - l.cy) || 1, w0: l.w, s0: l.size, a0: Math.atan2(p.y - l.cy, p.x - l.cx) * 180 / Math.PI - (l.rot || 0) };
+    C.drag = { kind: h.dataset.h, l, p0: p, d0: Math.hypot(p.x - l.cx, p.y - l.cy) || 1, w0: l.w, h0: l.h, s0: l.size, a0: Math.atan2(p.y - l.cy, p.x - l.cx) * 180 / Math.PI - (l.rot || 0) };
   } else {
     const g = e.target.closest("[data-id]");
     if (!g) { if (C.sel) { C.sel = null; renderSel(); renderInspector(); renderLayerList(); } return; }
@@ -1569,7 +1572,7 @@ scene.addEventListener("pointermove", e => {
     l.cx = nx; l.cy = ny; showGuides(vx, hy); patchLayer(l, false);
   } else if (d.kind === "scale") {
     const f = Math.max(0.03, Math.hypot(p.x - l.cx, p.y - l.cy) / d.d0);
-    if (l.type === "image") l.w = Math.max(8, d.w0 * f); else l.size = Math.max(6, Math.round(d.s0 * f));
+    if (l.type === "image") l.w = Math.max(8, d.w0 * f); else if (l.type === "shape") { l.w = Math.max(4, d.w0 * f); l.h = Math.max(2, d.h0 * f); } else l.size = Math.max(6, Math.round(d.s0 * f));
     patchLayer(l, true);
   } else if (d.kind === "rot") {
     let a = Math.atan2(p.y - l.cy, p.x - l.cx) * 180 / Math.PI - d.a0;
@@ -1617,7 +1620,7 @@ function syncInspectorNumbers() {
   const l = selLayer(); if (!l) return;
   const set = (id, v) => { const el = $("#" + id); if (el && document.activeElement !== el) el.value = v; };
   set("insRot", Math.round(l.rot || 0));
-  if (l.type === "image") set("insW", Math.round(l.w)); else { set("insSize", Math.round(l.size)); set("insSizeR", Math.round(l.size)); }
+  if (l.type === "image") set("insW", Math.round(l.w)); else if (l.type === "shape") { set("insW", Math.round(l.w)); set("insH", Math.round(l.h)); } else { set("insSize", Math.round(l.size)); set("insSizeR", Math.round(l.size)); }
 }
 function renderInspector() {
   const box = $("#inspector"), l = selLayer();
@@ -1627,11 +1630,25 @@ function renderInspector() {
     $("#insAddText").onclick = () => addTextLayer(fontDesigns()[0] ? "g:" + fontDesigns()[0].id : "s:grotesk");
     return;
   }
-  const isText = l.type === "text";
-  const f = isText ? fontOf(l) : null;
+  const isText = l.type === "text", isShape = l.type === "shape";
+  const f = isText ? fontOf(l) : null, SP = isShape ? SHAPES[l.shape] || {} : null;
   box.innerHTML = `
     <h4>${isText ? "Text" : esc(l.name || "Bild")}</h4>
-    ${isText ? `
+    ${isShape ? `
+      <div class="rowinline">
+        <div class="field"><label for="insW">Breite</label><input type="number" id="insW" min="4" value="${Math.round(l.w)}"></div>
+        <div class="field"><label for="insH">Höhe</label><input type="number" id="insH" min="2" value="${Math.round(l.h)}"></div>
+      </div>
+      <div class="field"><label for="insSw">Strichstärke <output id="insSwOut">${Math.round(l.sw)}</output></label><input type="range" id="insSw" min="0" max="${Math.max(20, Math.round(Math.min(l.w, l.h) / 2))}" value="${Math.round(l.sw)}"></div>
+      ${SP.gap != null ? `<div class="field"><label for="insGap">Abstand <output id="insGapOut">${Math.round(l.gap)}</output></label><input type="range" id="insGap" min="0" max="${Math.max(40, Math.round(Math.min(l.w, l.h) / 3))}" value="${Math.round(l.gap)}"></div>` : ""}
+      ${SP.r != null ? `<div class="field"><label for="insR">Ecken <output id="insROut">${Math.round(l.r)}</output></label><input type="range" id="insR" min="0" max="${Math.max(10, Math.round(Math.min(l.w, l.h) / 2))}" value="${Math.round(l.r)}"></div>` : ""}
+      ${SP.n != null ? `<div class="field"><label for="insN">${l.shape === "grid" ? "Felder" : l.shape === "rays" ? "Strahlen" : l.shape === "poly" || l.shape === "tri" ? "Ecken" : "Zacken"} <output id="insNOut">${l.n}</output></label><input type="range" id="insN" min="${l.shape === "grid" ? 2 : 3}" max="${l.shape === "grid" ? 16 : 48}" value="${l.n}"></div>` : ""}
+      <div class="rowinline">
+        <div class="field" style="flex:0 0 auto"><label for="insColor">Farbe</label><input type="color" id="insColor" value="${safeColor(l.color).slice(0, 7)}"></div>
+        ${SP.closed ? `<label class="check" style="align-self:flex-end;padding-bottom:8px"><input type="checkbox" id="insFill" ${l.fill ? "checked" : ""}> Gefüllt</label>` : ""}
+      </div>
+      <button class="btn small" type="button" id="insDeco">Als Deko speichern</button>
+    ` : isText ? `
       <div class="field"><label for="insText">Inhalt</label><textarea id="insText" style="min-height:64px">${esc(l.text)}</textarea></div>
       <div class="field"><label for="insFont">Schrift</label><select id="insFont">${fontOptions().map(([k, n]) => `<option value="${esc(k)}" ${k === l.font ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></div>
       <div class="rowinline">
@@ -1654,6 +1671,7 @@ function renderInspector() {
       <div class="btnrow">
         <button class="btn small" type="button" id="insFlip" aria-pressed="${!!l.flip}">Spiegeln</button>
         <button class="btn small" type="button" id="insCover">Fläche füllen</button>
+        <button class="btn small" type="button" id="insDeco">Als Deko speichern</button>
       </div>`}
     <div class="rowinline">
       <div class="field"><label for="insOp">Deckkraft</label><input type="range" id="insOp" min="0" max="100" value="${Math.round((l.opacity ?? 1) * 100)}"></div>
@@ -1675,7 +1693,13 @@ function renderInspector() {
   on("insBack", "click", () => moveLayer(l, -1));
   on("insDup", "click", duplicateSel);
   on("insDel", "click", deleteSel);
-  if (isText) {
+  on("insDeco", "click", () => saveDeco(l));
+  if (isShape) {
+    const num = (id, key, lo, after) => { on(id, "input", live(() => { l[key] = Math.max(lo, +$("#" + id).value || 0); const o = $("#" + id + "Out"); if (o) o.textContent = Math.round(l[key]); after?.(); })); on(id, "change", commit); };
+    num("insW", "w", 4); num("insH", "h", 2); num("insSw", "sw", 0); num("insGap", "gap", 0); num("insR", "r", 0); num("insN", "n", 2);
+    on("insColor", "input", live(() => l.color = $("#insColor").value)); on("insColor", "change", commit);
+    on("insFill", "change", () => { l.fill = $("#insFill").checked; patchLayer(l, true); commit(); });
+  } else if (isText) {
     on("insText", "input", live(() => l.text = $("#insText").value, true)); on("insText", "change", commit);
     on("insFont", "change", () => { l.font = $("#insFont").value; patchLayer(l, true); renderSel(); commit(); renderInspector(); });
     const setSize = v => { l.size = Math.max(4, Math.min(4000, +v || l.size)); };
@@ -1736,7 +1760,20 @@ function renderLibrary() {
     fbox.append(b);
   }
   const box = $("#lib"); box.innerHTML = "";
-  const mk = (thumb, label, title, fn) => { const b = document.createElement("button"); b.type = "button"; b.className = "libitem"; b.title = title; const t = document.createElement("div"); t.className = "lt"; t.append(thumb); const s = document.createElement("span"); s.textContent = label; b.append(t, s); b.onclick = fn; box.append(b); };
+  const mk = (thumb, label, title, fn) => { const b = document.createElement("button"); b.type = "button"; b.className = "libitem"; b.title = title; const t = document.createElement("div"); t.className = "lt"; t.append(thumb); const s = document.createElement("span"); s.textContent = label; b.append(t, s); b.onclick = fn; box.append(b); return b; };
+  if (C.lib === "deco" || C.lib === "all") {
+    for (const dd of S.decos) {
+      const th = document.createElement("div"); th.style.cssText = "width:100%;height:100%;display:grid;place-items:center";
+      th.innerHTML = dd.layer.type === "shape" ? shapeThumb(dd.layer) : `<img src="${svgUrl(dd.layer.svg)}" alt="" style="max-width:100%;max-height:100%">`;
+      const b = mk(th, "★ " + dd.name, `Eigene Deko „${dd.name}“ einfügen (Rechtsklick: löschen)`, () => addSavedDeco(dd));
+      b.oncontextmenu = e => { e.preventDefault(); if (C.delDeco === dd.id) { S.decos = S.decos.filter(x => x !== dd); store.set("decos", S.decos); C.delDeco = null; renderLibrary(); toast("Deko gelöscht"); } else { C.delDeco = dd.id; toast("Nochmal rechtsklicken zum Löschen"); } };
+    }
+    for (const [k, sp] of Object.entries(SHAPES)) {
+      const th = document.createElement("div"); th.style.cssText = "width:100%;height:100%;display:grid;place-items:center";
+      th.innerHTML = shapeThumb({ shape: k, ...sp });
+      mk(th, sp.name, `„${sp.name}“ einfügen – Strichstärke rechts einstellbar`, () => addShapeLayer(k));
+    }
+  }
   if (C.lib === "deco" || C.lib === "all") for (const it of DECO) { const im = document.createElement("img"); im.src = svgUrl(it.svg); im.alt = ""; mk(im, it.name, `„${it.name}“ einfügen`, () => addDecoLayer(it)); }
   if (C.lib === "font" || C.lib === "all") for (const [k, f] of Object.entries(BUILTIN_FONTS)) { const w = document.createElement("div"); w.className = "specimen"; w.innerHTML = composeSvg(f.glyphs, "Ag"); mk(w, f.label, `Text in „${f.label}“ hinzufügen`, () => addTextLayer("b:" + k, k === "script" || k === "fraktur" ? "Dein Text" : "DEIN TEXT")); }
   const items = S.designs.filter(d => d.versions.length && (C.lib === "all" || d.mode === C.lib));
@@ -1772,7 +1809,7 @@ $("#compName").oninput = e => { curComp().name = e.target.value || "Ohne Titel";
 $("#compFormat").onchange = e => {
   const c = curComp(), f = FORMATS[e.target.value]; if (!f) return;
   const sx = f.w / c.w, sy = f.h / c.h, s = Math.min(sx, sy);
-  c.layers.forEach(l => { l.cx *= sx; l.cy *= sy; if (l.type === "image") l.w *= s; else l.size = Math.max(4, Math.round(l.size * s)); });
+  c.layers.forEach(l => { l.cx *= sx; l.cy *= sy; if (l.type === "image") l.w *= s; else if (l.type === "shape") { l.w *= s; l.h *= s; } else l.size = Math.max(4, Math.round(l.size * s)); });
   c.w = f.w; c.h = f.h; c.format = e.target.value;
   commit(); renderComposer();
 };
@@ -2581,18 +2618,15 @@ const sparkle = (cx, cy, r) => `<path d="M${cx} ${cy - r}C${cx + r * .08} ${cy -
 const starPts = (cx, cy, R, r, n) => Array.from({ length: n * 2 }, (_, i) => { const a = Math.PI / n * i - Math.PI / 2, rr = i % 2 ? r : R; return `${rd(cx + Math.cos(a) * rr)},${rd(cy + Math.sin(a) * rr)}`; }).join(" ");
 const X = 'xmlns="http://www.w3.org/2000/svg"';
 const DECO = [
-  { id: "star", name: "Stern", svg: `<svg ${X} viewBox="0 0 100 100"><polygon points="${starPts(50, 52, 48, 20, 5)}" fill="#111"/></svg>` },
   { id: "starO", name: "Stern Umriss", svg: `<svg ${X} viewBox="0 0 100 100"><polygon points="${starPts(50, 52, 44, 18, 5)}" fill="none" stroke="#111" stroke-width="6" stroke-linejoin="round"/></svg>` },
   { id: "sparkle", name: "Funkeln", svg: `<svg ${X} viewBox="0 0 100 100"><g fill="#111">${sparkle(50, 50, 48)}</g></svg>` },
   { id: "sparkles", name: "Funkel-Gruppe", svg: `<svg ${X} viewBox="0 0 200 120"><g fill="#111">${sparkle(60, 60, 48)}${sparkle(140, 30, 24)}${sparkle(160, 90, 18)}</g></svg>` },
   { id: "asterisk", name: "Sternchen", svg: `<svg ${X} viewBox="0 0 100 100"><g stroke="#111" stroke-width="7" stroke-linecap="round">${ast(50, 50, 44)}</g></svg>` },
   { id: "astrow", name: "Sternchen-Reihe", svg: `<svg ${X} viewBox="0 0 620 60"><g stroke="#111" stroke-width="5" stroke-linecap="round">${Array.from({ length: 10 }, (_, i) => ast(30 + i * 62, 30, 25)).join("")}</g></svg>` },
-  { id: "dash", name: "Gestrichelte Linie", svg: `<svg ${X} viewBox="0 0 600 20"><line x1="5" y1="10" x2="595" y2="10" stroke="#111" stroke-width="7" stroke-dasharray="16 10"/></svg>` },
   { id: "dotarc", name: "Punkt-Bogen", svg: `<svg ${X} viewBox="0 0 600 160"><path d="M20 140Q300 -60 580 140" fill="none" stroke="#111" stroke-width="9" stroke-linecap="round" stroke-dasharray="0 17"/></svg>` },
-  { id: "banner", name: "Banner", svg: `<svg ${X} viewBox="0 0 600 140"><path d="M10 40H90V10H510V40H590L560 85L590 130H470V100H130V130H10L40 85Z" fill="none" stroke="#111" stroke-width="7" stroke-linejoin="round"/><path d="M90 40V100H130M510 40V100H470" fill="none" stroke="#111" stroke-width="5"/></svg>` },
+  { id: "banner", name: "Band", svg: `<svg ${X} viewBox="0 0 600 140"><path d="M10 40H90V10H510V40H590L560 85L590 130H470V100H130V130H10L40 85Z" fill="none" stroke="#111" stroke-width="7" stroke-linejoin="round"/><path d="M90 40V100H130M510 40V100H470" fill="none" stroke="#111" stroke-width="5"/></svg>` },
   { id: "ticket", name: "Ticket-Rahmen", svg: `<svg ${X} viewBox="0 0 600 220"><rect x="20" y="20" width="570" height="190" fill="none" stroke="#111" stroke-width="5"/><rect x="8" y="8" width="570" height="190" fill="#fff" stroke="#111" stroke-width="6"/><line x1="208" y1="8" x2="208" y2="198" stroke="#111" stroke-width="5"/></svg>` },
   { id: "label", name: "Gerissenes Etikett", svg: `<svg ${X} viewBox="0 0 600 200"><path d="M14 22L60 10L98 24L150 8L210 20L262 6L320 22L380 9L440 21L500 7L560 19L590 12L584 70L594 120L580 188L530 178L470 192L410 180L350 194L290 181L230 193L170 180L110 192L50 179L10 190L18 130L6 80Z" fill="#fff" stroke="#111" stroke-width="7" stroke-linejoin="round"/></svg>` },
-  { id: "box", name: "Rahmen", svg: `<svg ${X} viewBox="0 0 600 260"><rect x="6" y="6" width="588" height="248" fill="none" stroke="#111" stroke-width="10"/></svg>` },
   { id: "burst", name: "Sticker-Stern", svg: `<svg ${X} viewBox="0 0 200 200"><polygon points="${starPts(100, 100, 96, 72, 16)}" fill="#fff" stroke="#111" stroke-width="7" stroke-linejoin="round"/></svg>` },
   { id: "stamp", name: "Stempel-Kreis", svg: `<svg ${X} viewBox="0 0 200 200"><circle cx="100" cy="100" r="92" fill="none" stroke="#111" stroke-width="8"/><circle cx="100" cy="100" r="76" fill="none" stroke="#111" stroke-width="4"/></svg>` },
 ];
@@ -2601,6 +2635,105 @@ function addDecoLayer(item) {
   const c = curComp(), vb = viewBoxOf(item.svg);
   const w = vb.w > vb.h * 2 ? c.w * 0.7 : Math.min(c.w, c.h) * 0.18;
   const l = { id: uid(), type: "image", name: item.name, mode: "deco", svg: item.svg, vw: vb.w, vh: vb.h, cx: c.w / 2, cy: c.h / 2, w, rot: 0, opacity: 1, flip: false };
+  c.layers.push(l); C.sel = l.id; commit(); renderComposer();
+}
+
+/* --- Formen: parametrische Deko, Strichstärke einstellbar --- */
+const SHAPES = {
+  rect: { name: "Rahmen", w: 600, h: 400, sw: 10, closed: true, r: 0 },
+  rect2: { name: "Doppelrahmen", w: 600, h: 400, sw: 6, gap: 12, closed: true },
+  round: { name: "Runder Rahmen", w: 600, h: 300, sw: 10, r: 70, closed: true },
+  ticket: { name: "Ticket", w: 600, h: 240, sw: 8, r: 36, closed: true },
+  box: { name: "Fläche", w: 600, h: 300, sw: 0, fill: true, closed: true, r: 0 },
+  ring: { name: "Kreis-Ring", w: 400, h: 400, sw: 12, closed: true },
+  ring2: { name: "Doppelring", w: 400, h: 400, sw: 6, gap: 14, closed: true },
+  dot: { name: "Kreisfläche", w: 300, h: 300, sw: 0, fill: true, closed: true },
+  line: { name: "Linie", w: 800, h: 10, sw: 10 },
+  line2: { name: "Doppellinie", w: 800, h: 30, sw: 6, gap: 10 },
+  dash: { name: "Strichlinie", w: 800, h: 10, sw: 8 },
+  dots: { name: "Punktlinie", w: 800, h: 14, sw: 14 },
+  wave: { name: "Wellenlinie", w: 800, h: 60, sw: 8, n: 8 },
+  zigzag: { name: "Zickzack", w: 800, h: 50, sw: 8, n: 14 },
+  corners: { name: "Ecken", w: 600, h: 400, sw: 10 },
+  bracket: { name: "Klammern", w: 600, h: 200, sw: 10 },
+  star: { name: "Stern", w: 300, h: 300, sw: 6, n: 5, fill: true, closed: true },
+  burst: { name: "Starburst", w: 400, h: 400, sw: 6, n: 18, fill: true, closed: true },
+  rays: { name: "Strahlen", w: 500, h: 500, sw: 8, n: 24 },
+  poly: { name: "Vieleck", w: 300, h: 300, sw: 10, n: 6, closed: true },
+  tri: { name: "Dreieck", w: 300, h: 260, sw: 10, n: 3, closed: true },
+  arrow: { name: "Pfeil", w: 500, h: 140, sw: 12 },
+  banner: { name: "Banner", w: 700, h: 170, sw: 8, closed: true },
+  cross: { name: "Kreuz", w: 200, h: 200, sw: 18 },
+  plus: { name: "Plus", w: 200, h: 200, sw: 18 },
+  grid: { name: "Raster", w: 600, h: 600, sw: 3, n: 6 }
+};
+const SHAPE_KEYS = ["sw", "gap", "r", "n", "fill"];
+function polyPts(cx, cy, rx, ry, n, inner) {
+  const k = inner ? n * 2 : n;
+  return Array.from({ length: k }, (_, i) => { const a = Math.PI * 2 * i / k - Math.PI / 2, f = inner && i % 2 ? inner : 1; return `${rd(cx + Math.cos(a) * rx * f)},${rd(cy + Math.sin(a) * ry * f)}`; }).join(" ");
+}
+function shapeInner(l, w = l.w, h = l.h, colOverride) {
+  const col = colOverride || safeColor(l.color), sw = Math.max(0, +l.sw || 0), s2 = sw / 2, fill = l.fill;
+  const st = `stroke="${col}" stroke-width="${rd(sw)}"`, F = fill ? `fill="${col}"` : `fill="none"`, x0 = s2, y0 = s2, x1 = w - s2, y1 = h - s2, cy = h / 2;
+  const R = (x, y, ww, hh, r = 0) => `<rect x="${rd(x)}" y="${rd(y)}" width="${rd(Math.max(0, ww))}" height="${rd(Math.max(0, hh))}" rx="${rd(Math.max(0, Math.min(r, ww / 2, hh / 2)))}" ${F} ${sw ? st : ""}/>`;
+  const E = (ix) => `<ellipse cx="${rd(w / 2)}" cy="${rd(h / 2)}" rx="${rd(Math.max(0, w / 2 - s2 - ix))}" ry="${rd(Math.max(0, h / 2 - s2 - ix))}" ${ix ? `fill="none"` : F} ${sw ? st : ""}/>`;
+  const P = (d, closed) => `<path d="${d}" ${closed ? F : 'fill="none"'} ${st} stroke-linejoin="round" stroke-linecap="round"/>`;
+  const L = (ax, ay, bx, by, extra = "") => `<line x1="${rd(ax)}" y1="${rd(ay)}" x2="${rd(bx)}" y2="${rd(by)}" ${st} ${extra}/>`;
+  const g = l.gap ?? 0;
+  switch (l.shape) {
+    case "rect": return R(x0, y0, w - sw, h - sw, l.r || 0);
+    case "box": return R(0, 0, w, h, l.r || 0).replace(/stroke="[^"]*" stroke-width="[^"]*"/, "");
+    case "round": return R(x0, y0, w - sw, h - sw, l.r ?? 60);
+    case "rect2": { const i = sw + g; return R(x0, y0, w - sw, h - sw) + `<rect x="${rd(x0 + i)}" y="${rd(y0 + i)}" width="${rd(Math.max(0, w - sw - 2 * i))}" height="${rd(Math.max(0, h - sw - 2 * i))}" fill="none" ${st}/>`; }
+    case "ticket": { const r = Math.min(l.r ?? 30, (h - sw) / 2, (w - sw) / 2); return P(`M${rd(x0 + r)} ${rd(y0)}H${rd(x1 - r)}A${rd(r)} ${rd(r)} 0 0 0 ${rd(x1)} ${rd(y0 + r)}V${rd(y1 - r)}A${rd(r)} ${rd(r)} 0 0 0 ${rd(x1 - r)} ${rd(y1)}H${rd(x0 + r)}A${rd(r)} ${rd(r)} 0 0 0 ${rd(x0)} ${rd(y1 - r)}V${rd(y0 + r)}A${rd(r)} ${rd(r)} 0 0 0 ${rd(x0 + r)} ${rd(y0)}Z`, true); }
+    case "ring": case "dot": return E(0);
+    case "ring2": return E(0) + E(sw + g);
+    case "line": return L(0, cy, w, cy);
+    case "line2": { const o = (sw + g) / 2; return L(0, cy - o, w, cy - o) + L(0, cy + o, w, cy + o); }
+    case "dash": return L(0, cy, w, cy, `stroke-dasharray="${rd(sw * 3)} ${rd(sw * 2)}"`);
+    case "dots": return L(s2, cy, w - s2, cy, `stroke-linecap="round" stroke-dasharray="0 ${rd(Math.max(1, sw) * 2)}"`);
+    case "wave": { const n = Math.max(1, l.n || 8), a = Math.max(0, h / 2 - s2), sx = (w - sw) / n; let d = `M${rd(x0)} ${rd(cy)}`; for (let i = 0; i < n; i++) d += `Q${rd(x0 + sx * (i + 0.5))} ${rd(cy + (i % 2 ? a : -a) * 2)} ${rd(x0 + sx * (i + 1))} ${rd(cy)}`; return P(d); }
+    case "zigzag": { const n = Math.max(1, l.n || 12), sx = (w - sw) / n; let d = `M${rd(x0)} ${rd(y1)}`; for (let i = 1; i <= n; i++) d += `L${rd(x0 + sx * i)} ${rd(i % 2 ? y0 : y1)}`; return P(d); }
+    case "corners": { const k = Math.min(w, h) * 0.22; return P(`M${rd(x0)} ${rd(y0 + k)}V${rd(y0)}H${rd(x0 + k)}M${rd(x1 - k)} ${rd(y0)}H${rd(x1)}V${rd(y0 + k)}M${rd(x1)} ${rd(y1 - k)}V${rd(y1)}H${rd(x1 - k)}M${rd(x0 + k)} ${rd(y1)}H${rd(x0)}V${rd(y1 - k)}`).replace('stroke-linecap="round"', 'stroke-linecap="square"'); }
+    case "bracket": { const k = Math.min(w * 0.12, h * 0.4); return P(`M${rd(x0 + k)} ${rd(y0)}H${rd(x0)}V${rd(y1)}H${rd(x0 + k)}M${rd(x1 - k)} ${rd(y0)}H${rd(x1)}V${rd(y1)}H${rd(x1 - k)}`); }
+    case "star": return `<polygon points="${polyPts(w / 2, h / 2 + h * 0.03, w / 2 - s2, h / 2 - s2, l.n || 5, 0.42)}" ${F} ${st} stroke-linejoin="round"/>`;
+    case "burst": return `<polygon points="${polyPts(w / 2, h / 2, w / 2 - s2, h / 2 - s2, l.n || 18, 0.8)}" ${F} ${st} stroke-linejoin="round"/>`;
+    case "poly": case "tri": return `<polygon points="${polyPts(w / 2, l.shape === "tri" ? h * 0.6 : h / 2, w / 2 - s2, (l.shape === "tri" ? h * 0.6 : h / 2) - s2, l.n || 6)}" ${F} ${st} stroke-linejoin="round"/>`;
+    case "rays": { const n = Math.max(3, l.n || 24); let o = ""; for (let i = 0; i < n; i++) { const a = Math.PI * 2 * i / n; o += L(w / 2 + Math.cos(a) * w * 0.16, h / 2 + Math.sin(a) * h * 0.16, w / 2 + Math.cos(a) * (w / 2 - s2), h / 2 + Math.sin(a) * (h / 2 - s2), 'stroke-linecap="round"'); } return o; }
+    case "arrow": { const hl = Math.min(h * 0.9, w * 0.3); return P(`M${rd(x0)} ${rd(cy)}H${rd(x1)}M${rd(x1 - hl * 0.7)} ${rd(y0)}L${rd(x1)} ${rd(cy)}L${rd(x1 - hl * 0.7)} ${rd(y1)}`); }
+    case "banner": { const t = h * 0.22, n = w * 0.09; return P(`M${rd(x0)} ${rd(y0 + t)}H${rd(x0 + n * 1.6)}V${rd(y0)}H${rd(x1 - n * 1.6)}V${rd(y0 + t)}H${rd(x1)}L${rd(x1 - n)} ${rd((y0 + t + y1) / 2)}L${rd(x1)} ${rd(y1)}H${rd(x1 - n * 1.6 - n * 0.6)}V${rd(y1 - t)}H${rd(x0 + n * 2.2)}V${rd(y1)}H${rd(x0)}L${rd(x0 + n)} ${rd((y0 + t + y1) / 2)}Z`, true); }
+    case "cross": return L(x0, y0, x1, y1, 'stroke-linecap="round"') + L(x1, y0, x0, y1, 'stroke-linecap="round"');
+    case "plus": return L(w / 2, y0, w / 2, y1) + L(x0, h / 2, x1, h / 2);
+    case "grid": { const n = Math.max(1, l.n || 6); let o = R(x0, y0, w - sw, h - sw); for (let i = 1; i < n; i++) o += L(x0 + (w - sw) * i / n, y0, x0 + (w - sw) * i / n, y1) + L(x0, y0 + (h - sw) * i / n, x1, y0 + (h - sw) * i / n); return o; }
+  }
+  return R(x0, y0, w - sw, h - sw);
+}
+function shapeThumb(l) {
+  const sp = { ...SHAPES[l.shape], ...l }, f = 100 / Math.max(sp.w, sp.h), w = sp.w * f, h = Math.max(sp.h * f, 4);
+  const t = { ...sp, w, h, sw: Math.max(sp.sw ? 2 : 0, sp.sw * f * 2.2), gap: (sp.gap || 0) * f * 2, r: (sp.r || 0) * f };
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-4 -4 ${rd(w + 8)} ${rd(h + 8)}" style="width:100%;height:auto;max-height:100%;overflow:visible">${shapeInner(t, w, h, "currentColor")}</svg>`;
+}
+function addShapeLayer(key, over = {}) {
+  const c = curComp(), sp = SHAPES[key], long = Math.max(sp.w, sp.h) >= 3 * Math.min(sp.w, sp.h);
+  const f = long ? c.w * 0.7 / sp.w : Math.min(c.w, c.h) * 0.45 / Math.max(sp.w, sp.h);
+  const l = { id: uid(), type: "shape", shape: key, name: sp.name, mode: "deco", w: sp.w * f, h: Math.max(sp.h * f, sp.sw || 2), cx: c.w / 2, cy: c.h / 2, rot: 0, opacity: 1,
+    color: c.bg && luminance(c.bg) < 0.4 ? "#ffffff" : "#131926", ...Object.fromEntries(SHAPE_KEYS.filter(k => sp[k] != null).map(k => [k, sp[k]])), ...over };
+  if (key === "line" || key === "dash" || key === "dots") l.h = l.sw;
+  c.layers.push(l); C.sel = l.id; commit(); renderComposer();
+  return l;
+}
+S.decos = store.get("decos", []);
+function saveDeco(l) {
+  const keep = l.type === "shape" ? ["type", "shape", "w", "h", "color", ...SHAPE_KEYS] : ["type", "svg", "vw", "vh", "w"];
+  const name = (l.name || (l.type === "shape" ? SHAPES[l.shape]?.name : "Deko") || "Deko").replace(/^Motiv/, "Deko").slice(0, 40);
+  S.decos.unshift({ id: uid(), name, layer: Object.fromEntries(keep.filter(k => l[k] != null).map(k => [k, l[k]])) });
+  if (!store.set("decos", S.decos)) toast("Der Browser-Speicher ist voll – die Deko bleibt nur bis zum Neuladen.");
+  else toast(`„${name}“ unter Bibliothek → Deko gespeichert`);
+  if (S.mode === "compose") renderLibrary();
+}
+function addSavedDeco(dd) {
+  const c = curComp(), L = JSON.parse(JSON.stringify(dd.layer));
+  const l = { id: uid(), name: dd.name, mode: "deco", cx: c.w / 2, cy: c.h / 2, rot: 0, opacity: 1, flip: false, ...L };
   c.layers.push(l); C.sel = l.id; commit(); renderComposer();
 }
 
@@ -2732,10 +2865,48 @@ function tplScan(img) {
   };
   return { W, H, sc, px, ink, lab, comps, paper, cvs, inks, snap };
 }
+/* Rahmen, Linien, Kreise und Flächen erkennen */
+function tplShapes(A) {
+  const { W, H, lab, comps } = A, M = Math.max(W, H), out = [];
+  for (const c of comps) {
+    if (Math.max(c.w, c.h) < M * 0.04 || c.n < 40) continue;
+    const fill = c.n / (c.w * c.h), Lg = Math.max(c.w, c.h), Sm = Math.min(c.w, c.h);
+    const col = A.snap(c.sn ? [c.sr / c.sn, c.sg / c.sn, c.sb / c.sn] : [c.r / c.n, c.g / c.n, c.b / c.n]);
+    const at = (x, y) => lab[y * W + x] === c.k;
+    if (Lg >= Sm * 8 && fill > 0.6) { out.push({ c, shape: "line", sw: Math.max(1, c.n / Lg), col, vert: c.h > c.w }); continue; }
+    if (fill > 0.93 && Sm >= 6) { out.push({ c, shape: "box", sw: 0, col }); continue; }
+    const run = (x, y, dx, dy) => { let n = 0; while (x >= c.x0 && x <= c.x1 && y >= c.y0 && y <= c.y1 && at(x, y)) { n++; x += dx; y += dy; } return n; };
+    const mx = Math.round(c.cx), my = Math.round(c.cy);
+    const ts = [run(c.x0, my, 1, 0), run(c.x1, my, -1, 0), run(mx, c.y0, 0, 1), run(mx, c.y1, 0, -1)];
+    const tmin = Math.min(...ts), tmax = Math.max(...ts);
+    if (tmin >= 1 && tmax < Sm * 0.12 && tmax <= tmin * 2.5 + 2 && Lg >= M * 0.06) {
+      const t = median(ts), band = t * 1.5 + 1.5, a = c.w / 2, b = c.h / 2, rin = 1 - band / Math.min(a, b);
+      let inBand = 0, inRing = 0;
+      for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) {
+        if (!at(x, y)) continue;
+        if (Math.min(x - c.x0, c.x1 - x, y - c.y0, c.y1 - y) < band) inBand++;
+        const rho = Math.hypot((x + 0.5 - c.x0 - a) / a, (y + 0.5 - c.y0 - b) / b);
+        if (rho > rin && rho < 1.08) inRing++;
+      }
+      const eRect = 2 * t * (c.w + c.h) - 4 * t * t, eRing = Math.PI * (a * b - Math.max(0, a - t) * Math.max(0, b - t));
+      if (inBand / c.n > 0.92 && c.n / eRect > 0.55 && c.n / eRect < 1.4) {
+        let dg = 0; while (dg < Sm / 2 && !at(c.x0 + dg, c.y0 + dg)) dg++;
+        out.push({ c, shape: "rect", sw: t, r: dg > t * 0.7 ? dg * 3.4 : 0, col }); continue;
+      }
+      if (inRing / c.n > 0.9 && c.n / eRing > 0.6 && c.n / eRing < 1.45) { out.push({ c, shape: "ring", sw: t, col }); continue; }
+    }
+    if (fill > 0.7 && fill < 0.84) {
+      const a = c.w / 2, b = c.h / 2; let inside = 0, hit = 0;
+      for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) { const rho = Math.hypot((x + 0.5 - c.x0 - a) / a, (y + 0.5 - c.y0 - b) / b); if (rho <= 0.94) { inside++; if (at(x, y)) hit++; } }
+      if (inside && hit / inside > 0.97) out.push({ c, shape: "dot", sw: 0, col });
+    }
+  }
+  return out;
+}
 /* Buchstaben zu Zeilen gruppieren */
-function tplLines(A) {
+function tplLines(A, skip = new Set()) {
   const { W, H, comps } = A;
-  const cand = comps.filter(c => c.n >= 12 && c.h >= 8 && c.h <= H * 0.22 && c.w <= W * 0.5 && c.n / (c.w * c.h) < 0.92);
+  const cand = comps.filter(c => !skip.has(c) && c.n >= 12 && c.h >= 8 && c.h <= H * 0.22 && c.w <= W * 0.5 && c.n / (c.w * c.h) < 0.92);
   cand.sort((a, b) => a.x0 - b.x0);
   const par = new Map(cand.map(c => [c, c]));
   const find = c => { while (par.get(c) !== c) { par.set(c, par.get(par.get(c))); c = par.get(c); } return c; };
@@ -2767,7 +2938,7 @@ function tplLines(A) {
   // kleine Teile (i-Punkte, Satzzeichen, Anführungszeichen) den Zeilen zuordnen
   const used = new Set(lines.flatMap(L => L.members));
   for (const c of comps) {
-    if (used.has(c) || c.n < 3) continue;
+    if (used.has(c) || skip.has(c) || c.n < 3) continue;
     for (const L of lines) {
       if (c.h > L.capH * 0.7) continue;
       if (c.cy < L.y0 - L.capH * 0.45 || c.cy > L.y1 + L.capH * 0.2) continue;
@@ -2871,6 +3042,7 @@ async function tplBuild() {
   try {
     tplMsg("Bild wird analysiert …"); await new Promise(r => setTimeout(r, 30));
     const img = await loadImg(TPL.url), A = tplScan(img), { lines: found, used } = tplLines(A);
+    const shapes = $("#tplShapes").checked ? tplShapes(A).filter(x => !used.has(x.c)) : [], shapeSet = new Set(shapes.map(x => x.c));
     const CW = 1000, k = CW / A.W, CH = Math.round(A.H * k);
     let worker = null;
     if (useOcr && found.length) { tplMsg("Texterkennung wird geladen …"); try { worker = await tplOcrWorker(); } catch { toast("Die Texterkennung konnte nicht geladen werden – die Zeilen bekommen Platzhaltertext."); } }
@@ -2892,9 +3064,16 @@ async function tplBuild() {
       }
       lines.push(L);
     }
+    shapeSet.forEach(c => used.add(c));
     const regs = tplRegions(A, used);
     const c = { id: uid(), name: ("Vorlage " + (TPL.name || "")).trim().slice(0, 40), format: "", w: CW, h: CH, bg: toHex(A.paper), layers: [] };
     if (ghost) c.layers.push({ id: uid(), type: "image", name: "Original (Vorlage)", mode: "deco", svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${A.W} ${A.H}"><image href="${A.cvs.toDataURL("image/jpeg", 0.8)}" width="${A.W}" height="${A.H}"/></svg>`, vw: A.W, vh: A.H, w: CW, cx: CW / 2, cy: CH / 2, rot: 0, opacity: 0.18 });
+    // Formen
+    for (const F of shapes) {
+      const c0 = F.c, sw = F.sw * k, base = { id: uid(), type: "shape", mode: "deco", shape: F.shape, name: SHAPES[F.shape].name, color: F.col, rot: 0, opacity: 1, sw, cx: c0.cx * k + k / 2, cy: c0.cy * k + k / 2 };
+      if (F.shape === "line") c.layers.push({ ...base, w: (F.vert ? c0.h : c0.w) * k, h: Math.max(1, sw), rot: F.vert ? 90 : 0 });
+      else c.layers.push({ ...base, w: c0.w * k, h: c0.h * k, r: (F.r || 0) * k, fill: F.shape === "box" || F.shape === "dot" });
+    }
     // Motive
     let ri = 0;
     for (const R of regs) {
@@ -2938,8 +3117,14 @@ async function tplBuild() {
       l.name = fontName;
       c.layers.push(l);
     }
+    const fk = $("#tplFormat").value, FM = FORMATS[fk];
+    if (FM) {
+      const sF = Math.min(FM.w / c.w, FM.h / c.h), ox = (FM.w - c.w * sF) / 2, oy = (FM.h - c.h * sF) / 2;
+      c.layers.forEach(l => { l.cx = l.cx * sF + ox; l.cy = l.cy * sF + oy; if (l.type === "text") { l.size *= sF; l.ls = (l.ls || 0) * sF; } else if (l.type === "shape") { l.w *= sF; l.h *= sF; l.sw *= sF; if (l.r) l.r *= sF; } else l.w *= sF; });
+      Object.assign(c, { w: FM.w, h: FM.h, format: fk });
+    }
     S.comps.push(c); S.compId = c.id; C.sel = null; saveComps(); renderComposer();
-    tplMsg(`Fertig: ${lines.length} Textzeilen, ${regs.length} Motive. Texte änderst du per Doppelklick, Motive kannst du verschieben, löschen oder in „Entwürfe“ umfärben.`);
+    tplMsg(`Fertig: ${lines.length} Textzeilen, ${shapes.length} Formen, ${regs.length} Motive. Formen und Motive kannst du rechts mit „Als Deko speichern“ in die Bibliothek legen.`);
   } catch (e) { console.error(e); tplMsg("Das Bild konnte nicht ausgewertet werden."); }
   TPL.busy = false; $("#tplGo").disabled = false;
 }
