@@ -7,7 +7,8 @@ Bild rein, Vektor raus – ein Werkzeug im Browser, ganz ohne KI.
 - **Entwürfe:** alles Gespeicherte bearbeiten (Farben, Hintergrund, Stil) und exportieren.
 - **Komposition:** Entwürfe und Schriften zu Flyern und Postern zusammensetzen, Text auch im Bogen oder Kreis, Export als SVG/PNG.
   - **Vorlage aus Bild:** Flyer oder Plakat hochladen – das Tool erkennt Papier- und Druckfarben, Textzeilen (Inhalt per Texterkennung [Tesseract](https://github.com/naptha/tesseract.js), Schrift per Schriftsuche) und Motive (als Vektor), Rahmen, Linien, Kreise und Flächen (als einstellbare Formen) und baut daraus eine bearbeitbare Komposition – wahlweise direkt in 1:1, 4:5, 9:16 oder A4.
-  - **Deko:** rund 25 Formen mit einstellbarer Strichstärke; Formen und Motive lassen sich mit „Als Deko speichern“ in die Bibliothek legen.
+  - **Flyer-Schriften:** 29 freie Schriften (Google Fonts, OFL) in Gruppen wie Metal & Fraktur, Jugendstil, Holzschrift & Western, 70er, Elegant, Comic – liegen als Glyphen-Dateien in `fonts/flyer/` (neu bauen mit `node scripts/build-flyer-fonts.mjs <woff-ordner>`)
+  - **Deko:** rund 50 Formen mit einstellbarer Strichstärke; Formen und Motive lassen sich mit „Als Deko speichern“ in die Bibliothek legen.
 
 Alle Daten bleiben im Browser (localStorage). Über **Daten → Alles sichern** lässt sich ein Stand als JSON exportieren und in einem anderen Browser wieder laden.
 
