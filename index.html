@@ -1405,11 +1405,77 @@ function fontOf(l) {
 function fontOptions() {
   return [...Object.entries(BUILTIN_FONTS).map(([k, f]) => ["b:" + k, f.label + " (Flyer-Schrift)"]), ...(FLY.index || []).map(f => ["f:" + f.id, f.family + " (Flyer-Schrift)"]), ...fontDesigns().map(d => ["g:" + d.id, d.name + " (eigene Schrift)"]), ...Object.entries(SYSFONTS).map(([k, f]) => ["s:" + k, f.label])];
 }
-function textMetrics(l) {
-  const m = lineMetrics(l);
-  if (!l.arc || Math.abs(l.arc) < 1) return m;
-  const A = arcLayout(l, m);
-  return { ...m, arc: A, w: A.w, h: A.h };
+function textMetrics(l) { const G = textGeom(l); return { f: G.f, w: G.w, h: G.h, lines: G.lines }; }
+/* Text-Effekte: Breite/Höhe (sx, sy %), Zeilenabstand (lead %), Blocksatz-Stapel (just "w" | "p"), Verzerren (warp, wamt),
+   Kontur (ow % der Größe, ocol, hollow), Schatten (shm "drop" | "3d", shx/shy % der Größe, shcol) */
+const WARPS = { none: "Aus", arch: "Bogen", bulge: "Wölbung", wave: "Welle", flag: "Flagge", rise: "Ansteigend" };
+const TG = new Map();
+function textGeom(l) {
+  const f = fontOf(l);
+  const key = JSON.stringify([f.name, l.text, l.size, l.ls, l.arc, l.align, l.weight, l.sx, l.sy, l.lead, l.just, l.warp, l.wamt, l.ow, l.hollow, l.shm, l.shx, l.shy]);
+  let G = TG.get(key);
+  if (!G) { G = buildTextGeom(l, f); if (TG.size > 400) TG.clear(); TG.set(key, G); }
+  return G;
+}
+/* Pfad Punkt für Punkt umrechnen (nur absolute M/L/Q/C/Z, wie in allen Schriften des Tools) */
+function mapPath(d, fn) {
+  const t = d.match(/[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) || [];
+  let out = "", nums = [];
+  const flush = () => { for (let i = 0; i + 1 < nums.length; i += 2) { const [x, y] = fn(nums[i], nums[i + 1]); out += (i ? " " : "") + rd(x) + " " + rd(y); } nums = []; };
+  for (const k of t) { if (/[A-Za-z]/.test(k)) { flush(); out += k; } else nums.push(+k); }
+  flush();
+  return out;
+}
+function buildTextGeom(l, f) {
+  const lines = String(l.text ?? "").split("\n"), size = l.size, sc = size / 1000, lead = (l.lead ?? 100) / 100;
+  const sx = (l.sx ?? 100) / 100, sy = (l.sy ?? 100) / 100, arc = l.arc && Math.abs(l.arc) >= 1;
+  const ow = l.hollow ? Math.max(size * 0.02, (l.ow || 0) * size / 100) : (l.ow || 0) * size / 100, half = ow / 2;
+  const sh = l.shm && l.shm !== "none" ? { dx: (l.shx ?? 5) * size / 100, dy: (l.shy ?? 5) * size / 100 } : null;
+  let w0, h0, parts = [], sys = null;
+  if (f.kind !== "g") {
+    mctx.font = `${l.weight || 400} ${size}px ${f.css}`;
+    const ws = lines.map(line => mctx.measureText(line).width + Math.max(0, [...line].length - 1) * (l.ls || 0)), lh = size * 1.2 * lead;
+    sys = { ws, lh };
+    if (arc) { sys.A = arcLayout(l, { f, lines, sc, lh }); w0 = sys.A.w; h0 = sys.A.h; }
+    else { w0 = Math.max(size * 0.6, ...ws); h0 = (lines.length - 1) * lh + size * 1.2; }
+  } else if (arc) {
+    const A = arcLayout(l, { f, lines, sc, lh: size });
+    for (const q of A.put) {
+      if (!q.gl) continue;
+      const a = q.deg * Math.PI / 180, cs = Math.cos(a) * sc, sn = Math.sin(a) * sc, tx = -q.gl.w / 2, ty = -800;
+      parts.push([q.gl.d, cs, sn, -sn, cs, A.ox + q.px + cs * tx - sn * ty, A.oy + q.py + sn * tx + cs * ty]);
+    }
+    w0 = A.w; h0 = A.h;
+  } else {
+    const lsEm = (l.ls || 0) / sc, sp = f.space || 280;
+    const rows = lines.map(line => { const items = []; let x = 0; for (const ch of line) { const gl = ch === " " ? null : glyphFor(f.glyphs, ch); items.push({ gl, x }); x += (gl ? gl.w : sp) + lsEm; } return { items, wEm: Math.max(0, x - (items.length ? lsEm : 0)) }; });
+    const maxEm = Math.max(300, ...rows.map(r => r.wEm)), just = l.just && rows.length > 1 ? l.just : null;
+    let y = 0, last = 1000;
+    rows.forEach(r => {
+      const fx = just && r.wEm > 0 ? maxEm / r.wEm : 1, fy = just === "p" ? fx : 1;
+      const x0 = just ? 0 : l.align === "left" ? 0 : l.align === "right" ? maxEm - r.wEm : (maxEm - r.wEm) / 2;
+      for (const it of r.items) if (it.gl) parts.push([it.gl.d, sc * fx, 0, 0, sc * fy, sc * (x0 + it.x * fx), sc * y]);
+      last = 1000 * fy; y += last * lead;
+    });
+    w0 = maxEm * sc; h0 = (y - last * lead + last) * sc;
+  }
+  const W = w0 * sx, H = h0 * sy, A = !arc && sys === null && l.warp && l.warp !== "none" ? (l.wamt ?? 50) / 100 : 0;
+  const pad = A ? Math.abs(A) * (l.warp === "arch" ? Math.max(H * 0.3, W * 0.16) : H * 0.5) : 0;
+  const ex = half + (sh ? Math.max(0, -sh.dx) : 0), ey = half + pad + (sh ? Math.max(0, -sh.dy) : 0);
+  const w = W + 2 * half + (sh ? Math.abs(sh.dx) : 0), h = H + 2 * half + 2 * pad + (sh ? Math.abs(sh.dy) : 0);
+  const warp = !A ? null : {
+    arch: (X, Y) => [X, Y - A * Math.max(H * 0.3, W * 0.16) * Math.sin(Math.PI * X / W)],
+    bulge: (X, Y) => [X, H / 2 + (Y - H / 2) * (1 + A * 0.8 * Math.sin(Math.PI * Math.min(1, Math.max(0, X / W))))],
+    wave: (X, Y) => [X, Y + A * H * 0.3 * Math.sin(Math.PI * 3 * X / W)],
+    flag: (X, Y) => [X, Y + A * H * 0.35 * (X / W) * Math.sin(Math.PI * 2.2 * X / W)],
+    rise: (X, Y) => [X, H + (Y - H) * (1 + A * 0.9 * (X / W - 0.5))]
+  }[l.warp];
+  const d = parts.map(([pd, a, b, c, dd, e, ff]) => mapPath(pd, (x, y) => {
+    let X = (a * x + c * y + e) * sx, Y = (b * x + dd * y + ff) * sy;
+    if (warp) [X, Y] = warp(X, Y);
+    return [X + ex, Y + ey];
+  })).join("");
+  return { f, lines, d, sys, w, h, ex, ey, sx, sy, sh, ow };
 }
 /* Text auf Bogen oder Kreis: l.arc = Winkel in Grad, den die längste Zeile umspannt (+ nach oben gewölbt, − nach unten) */
 function arcLayout(l, m) {
@@ -1445,19 +1511,6 @@ function arcLayout(l, m) {
   if (!put.length) { x0 = y0 = 0; x1 = l.size; y1 = l.size; }
   return { put, ox: -x0, oy: -y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
 }
-function lineMetrics(l) {
-  const f = fontOf(l), lines = String(l.text ?? "").split("\n");
-  if (f.kind === "g") {
-    const sc = l.size / 1000, lsEm = (l.ls || 0) / sc;
-    const sp = f.space || 280, ws = lines.map(line => { let x = 0, n = 0; for (const ch of line) { const g = ch === " " ? null : glyphFor(f.glyphs, ch); x += g ? g.w : sp; n++; } return x + Math.max(0, n - 1) * lsEm; });
-    const maxEm = Math.max(300, ...ws);
-    return { f, lines, ws, maxEm, sc, lsEm, w: maxEm * sc, h: lines.length * l.size, lh: l.size };
-  }
-  mctx.font = `${l.weight || 400} ${l.size}px ${f.css}`;
-  const ws = lines.map(line => mctx.measureText(line).width + Math.max(0, [...line].length - 1) * (l.ls || 0));
-  const lh = l.size * 1.2;
-  return { f, lines, ws, w: Math.max(l.size * 0.6, ...ws), h: lines.length * lh, lh };
-}
 function layerSize(l) { if (l.type === "image") return { w: l.w, h: l.w * l.vh / l.vw }; if (l.type === "shape") return { w: l.w, h: l.h }; const m = textMetrics(l); return { w: m.w, h: m.h }; }
 function transformOf(l) {
   const { w, h } = layerSize(l);
@@ -1480,36 +1533,32 @@ function layerInner(l, exp = false, idx = 0) {
   const { w, h } = layerSize(l);
   if (l.type === "shape") return shapeInner(l, w, h);
   if (l.type === "image") return exp ? nestedSvg(l.svg, w, h, "L" + idx + "-") : `<image href="${svgUrl(l.svg)}" width="${rd(w)}" height="${rd(h)}" preserveAspectRatio="xMidYMid meet"/>`;
-  const m = textMetrics(l), col = safeColor(l.color);
-  if (m.arc) {
-    const A = m.arc, k = rd(m.sc * 1000) / 1000;
-    const body = A.put.map(p => m.f.kind === "g"
-      ? (p.gl ? `<path transform="translate(${rd(p.px)} ${rd(p.py)}) rotate(${rd(p.deg)}) scale(${k}) translate(${rd(-p.gl.w / 2)} -800)" d="${p.gl.d}"/>` : "")
-      : `<text transform="translate(${rd(p.px)} ${rd(p.py)}) rotate(${rd(p.deg)})" text-anchor="middle">${esc(p.ch)}</text>`).join("");
-    return m.f.kind === "g"
-      ? `<g fill="${col}" fill-rule="nonzero" transform="translate(${rd(A.ox)} ${rd(A.oy)})">${body}</g>`
-      : `<g fill="${col}" font-family="${esc(m.f.css)}" font-size="${rd(l.size)}" font-weight="${l.weight || 400}" transform="translate(${rd(A.ox)} ${rd(A.oy)})">${body}</g>`;
+  return textInner(l);
+}
+function textInner(l, colOverride) {
+  const G = textGeom(l), col = colOverride || safeColor(l.color), oc = colOverride || safeColor(l.ocol || l.color), shc = colOverride || safeColor(l.shcol || "#000000");
+  const strokeA = (c) => G.ow ? `stroke="${c}" stroke-width="${rd(G.ow)}" stroke-linejoin="round"` : "";
+  const fillMain = l.hollow ? "none" : col;
+  let body;
+  if (!G.sys) body = (fill, stroke, po) => `<path d="${G.d}" fill="${fill}" fill-rule="nonzero" ${stroke}${po ? ' paint-order="stroke"' : ""}/>`;
+  else {
+    const f = G.f, S = G.sys, size = l.size;
+    const inner = S.A
+      ? S.A.put.map(q => `<text transform="translate(${rd(S.A.ox + q.px)} ${rd(S.A.oy + q.py)}) rotate(${rd(q.deg)})" text-anchor="middle">${esc(q.ch)}</text>`).join("")
+      : (() => { const anchor = l.align === "left" ? "start" : l.align === "right" ? "end" : "middle", w0 = (G.w - 2 * (G.ow / 2) - (G.sh ? Math.abs(G.sh.dx) : 0)) / G.sx, ax = l.align === "left" ? 0 : l.align === "right" ? w0 : w0 / 2;
+          return `<text text-anchor="${anchor}" letter-spacing="${rd(l.ls || 0)}" xml:space="preserve">` + G.lines.map((line, i) => `<tspan x="${rd(ax)}" y="${rd(i * S.lh + size * 0.95)}">${esc(line) || " "}</tspan>`).join("") + "</text>"; })();
+    body = (fill, stroke, po) => `<g transform="translate(${rd(G.ex)} ${rd(G.ey)}) scale(${rd(G.sx * 1000) / 1000} ${rd(G.sy * 1000) / 1000})" font-family="${esc(f.css)}" font-size="${rd(size)}" font-weight="${l.weight || 400}" fill="${fill}" ${stroke}${po ? ' paint-order="stroke"' : ""}>${inner}</g>`;
   }
-  if (m.f.kind === "g") {
-    let out = `<g fill="${col}" fill-rule="nonzero" transform="scale(${rd(m.sc * 1000) / 1000})">`;
-    m.lines.forEach((line, i) => {
-      let x = l.align === "left" ? 0 : l.align === "right" ? m.maxEm - m.ws[i] : (m.maxEm - m.ws[i]) / 2;
-      for (const ch of line) {
-        const g = ch === " " ? null : glyphFor(m.f.glyphs, ch);
-        if (g) out += `<path transform="translate(${rd(x)} ${i * 1000})" d="${g.d}"/>`;
-        x += (g ? g.w : (m.f.space || 280)) + m.lsEm;
-      }
-    });
-    return out + "</g>";
+  let out = "";
+  if (G.sh) {
+    const N = l.shm === "3d" ? Math.min(40, Math.max(2, Math.ceil(Math.max(Math.abs(G.sh.dx), Math.abs(G.sh.dy)) / Math.max(1, l.size * 0.012)))) : 1;
+    for (let k = N; k >= 1; k--) out += `<g transform="translate(${rd(G.sh.dx * k / N)} ${rd(G.sh.dy * k / N)})">${body(shc, strokeA(shc), false)}</g>`;
   }
-  const anchor = l.align === "left" ? "start" : l.align === "right" ? "end" : "middle";
-  const ax = l.align === "left" ? 0 : l.align === "right" ? w : w / 2;
-  return `<text font-family="${esc(m.f.css)}" font-size="${rd(l.size)}" font-weight="${l.weight || 400}" fill="${col}" text-anchor="${anchor}" letter-spacing="${rd(l.ls || 0)}" xml:space="preserve">` +
-    m.lines.map((line, i) => `<tspan x="${rd(ax)}" y="${rd(i * m.lh + l.size * 0.95)}">${esc(line) || " "}</tspan>`).join("") + "</text>";
+  return out + body(fillMain, l.hollow ? `stroke="${oc}" stroke-width="${rd(G.ow)}" stroke-linejoin="round"` : strokeA(oc), true);
 }
 /* Enger Rahmen: Bereich der Ebene, der wirklich sichtbar ist (lokale Koordinaten, gemessen an einem kleinen Raster) */
 const INK = new Map();
-const inkKey = l => { const { w, h } = layerSize(l); return JSON.stringify([l.type, l.type === "text" ? fontOf(l).name : 0, l.svg?.length, l.svg?.slice(0, 200), l.text, l.font, l.size, l.ls, l.arc, l.align, l.weight, l.shape, l.sw, l.gap, l.r, l.n, l.fill, rd(w), rd(h)]); };
+const inkKey = l => { const { w, h } = layerSize(l); return JSON.stringify([l.type, l.type === "text" ? [fontOf(l).name, l.sx, l.sy, l.lead, l.just, l.warp, l.wamt, l.ow, l.hollow, l.shm, l.shx, l.shy] : 0, l.svg?.length, l.svg?.slice(0, 200), l.text, l.font, l.size, l.ls, l.arc, l.align, l.weight, l.shape, l.sw, l.gap, l.r, l.n, l.fill, rd(w), rd(h)]); };
 function inkBox(l) {
   const { w, h } = layerSize(l), e = INK.get(inkKey(l));
   return e && e.box ? e.box : { x: 0, y: 0, w, h };
@@ -1582,21 +1631,62 @@ async function cropLayer(l) {
   l.vw = nv[2]; l.vh = nv[3]; l.w = b.w; l.cx = ncx; l.cy = ncy;
   return true;
 }
+/* Masken & Aussparungen: Hilfsebenen (helper "mask" | "cut") werden nicht selbst gezeichnet,
+   sondern begrenzen bzw. schneiden die Zielebene (maskId, cutIds) – in Bildkoordinaten. */
+const helperOf = (c, id) => c.layers.find(x => x.id === id && x.helper);
+function helperInner(x, col, exp) {
+  if (x.type === "text") return textInner(x, col);
+  if (x.type === "shape") { const { w, h } = layerSize(x); return shapeInner(x, w, h, col); }
+  return layerInner(x, exp, 0);
+}
+function maskDefs(c, exp) {
+  const big = `x="${-c.w}" y="${-c.h}" width="${3 * c.w}" height="${3 * c.h}"`;
+  let d = "";
+  for (const l of c.layers) {
+    if (l.helper) continue;
+    const m = l.maskId && helperOf(c, l.maskId), cuts = (l.cutIds || []).map(id => helperOf(c, id)).filter(Boolean);
+    if (m) d += `<mask id="mk-${l.id}" maskUnits="userSpaceOnUse" ${big} style="mask-type:alpha"><g data-mfor="${m.id}" data-mcol="" transform="${transformOf(m)}">${helperInner(m, null, exp)}</g></mask>`;
+    if (cuts.length) d += `<mask id="ct-${l.id}" maskUnits="userSpaceOnUse" ${big}><rect ${big} fill="#ffffff"/>${cuts.map(x => `<g data-mfor="${x.id}" data-mcol="#000000" transform="${transformOf(x)}">${helperInner(x, "#000000", exp)}</g>`).join("")}</mask>`;
+  }
+  return d;
+}
+function wrapMasks(c, l, inner) {
+  if (l.maskId && helperOf(c, l.maskId)) inner = `<g mask="url(#mk-${l.id})">${inner}</g>`;
+  if ((l.cutIds || []).some(id => helperOf(c, id))) inner = `<g mask="url(#ct-${l.id})">${inner}</g>`;
+  return inner;
+}
 function compSvg(c) {
-  let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${c.w} ${c.h}"><defs>${printDefs(c)}</defs>`;
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${c.w} ${c.h}"><defs>${printDefs(c)}${maskDefs(c, true)}</defs>`;
   s += bgMarkup(c, false);
   s += `<g${c.print?.on ? ' filter="url(#prt)"' : ""}>`;
-  c.layers.forEach((l, i) => { s += `<g transform="${transformOf(l)}" opacity="${l.opacity ?? 1}">${layerInner(l, true, i)}</g>`; });
+  c.layers.forEach((l, i) => { if (!l.helper) s += wrapMasks(c, l, `<g transform="${transformOf(l)}" opacity="${l.opacity ?? 1}">${layerInner(l, true, i)}</g>`); });
   return s + "</g></svg>";
+}
+/* zwei ausgewählte Ebenen verbinden: obere wird Maske bzw. Aussparung der unteren */
+function linkHelper(kind) {
+  const c = curComp(), sel = selected(); if (sel.length !== 2) return;
+  const [lo, hi] = sel.sort((a, b) => c.layers.indexOf(a) - c.layers.indexOf(b));
+  if (kind === "cut" && hi.type === "image") { toast("Ausschneiden geht mit Text oder Formen."); return; }
+  if (lo.helper) { toast("Das untere Element ist selbst schon eine Maske."); return; }
+  hi.helper = kind;
+  if (kind === "mask") lo.maskId = hi.id; else lo.cutIds = [...new Set([...(lo.cutIds || []), hi.id])];
+  commit(); renderScene(); setSelection([lo.id]);
+  toast(kind === "mask" ? "Eingepasst – verschiebe das Bild, um den Ausschnitt zu ändern." : "Ausgespart – Text bzw. Form bleibt bearbeitbar.");
+}
+function unlinkHelper(l) {
+  const c = curComp();
+  if (l.helper) { c.layers.forEach(x => { if (x.maskId === l.id) delete x.maskId; if (x.cutIds) x.cutIds = x.cutIds.filter(id => id !== l.id); }); delete l.helper; }
+  else { const ids = [l.maskId, ...(l.cutIds || [])].filter(Boolean); delete l.maskId; delete l.cutIds; ids.forEach(id => { const h = c.layers.find(x => x.id === id); if (h && !c.layers.some(x => x.maskId === id || x.cutIds?.includes(id))) delete h.helper; }); }
+  commit(); renderScene(); renderInspector(); renderLayerList();
 }
 
 /* --- scene rendering --- */
 function renderScene() {
   const c = curComp();
   scene.setAttribute("viewBox", `0 0 ${c.w} ${c.h}`);
-  let html = `<defs><pattern id="chk" width="40" height="40" patternUnits="userSpaceOnUse"><rect width="40" height="40" fill="#ffffff"/><rect width="20" height="20" fill="#dde1e7"/><rect x="20" y="20" width="20" height="20" fill="#dde1e7"/></pattern>${printDefs(c)}</defs>`;
+  let html = `<defs><pattern id="chk" width="40" height="40" patternUnits="userSpaceOnUse"><rect width="40" height="40" fill="#ffffff"/><rect width="20" height="20" fill="#dde1e7"/><rect x="20" y="20" width="20" height="20" fill="#dde1e7"/></pattern>${printDefs(c)}${maskDefs(c, false)}</defs>`;
   html += bgMarkup(c, true) + `<g id="lay"${c.print?.on ? ' filter="url(#prt)"' : ""}>`;
-  for (const l of c.layers) html += `<g data-id="${l.id}" transform="${transformOf(l)}" opacity="${l.opacity ?? 1}" ${l.locked ? 'pointer-events="none"' : 'style="cursor:move"'}>${layerInner(l)}${l.locked ? "" : hitRect(l)}</g>`;
+  for (const l of c.layers) html += wrapMasks(c, l, `<g data-id="${l.id}" transform="${transformOf(l)}" opacity="${(l.opacity ?? 1) * (l.helper ? 0 : 1)}" ${l.locked ? 'pointer-events="none"' : 'style="cursor:move"'}>${layerInner(l)}${l.locked ? "" : hitRect(l)}</g>`);
   html += `</g><g id="guides" pointer-events="none"></g><g id="selg"></g>`;
   scene.innerHTML = html;
   renderSel(); refreshInk(c.layers);
@@ -1605,7 +1695,8 @@ function layerEl(l) { return scene.querySelector(`[data-id="${l.id}"]`); }
 function patchLayer(l, content = true) {
   const g = layerEl(l); if (!g) return;
   g.setAttribute("transform", transformOf(l));
-  g.setAttribute("opacity", l.opacity ?? 1);
+  g.setAttribute("opacity", (l.opacity ?? 1) * (l.helper ? 0 : 1));
+  if (l.helper) scene.querySelectorAll(`[data-mfor="${l.id}"]`).forEach(m => { m.setAttribute("transform", transformOf(l)); if (content) m.innerHTML = helperInner(l, m.dataset.mcol || null, false); });
   if (!content) return;
   if (l.type === "image") {
     const { w, h } = layerSize(l);
@@ -1772,6 +1863,7 @@ function renderInspector() {
       <div class="field"><span class="lbl">Verteilen</span><div class="seg"><button type="button" data-dist="x">Waagerecht</button><button type="button" data-dist="y">Senkrecht</button></div></div>
       <div class="field"><span class="lbl">Auf der Seite</span><div class="seg"><button type="button" data-pg="h">Waagerecht mittig</button><button type="button" data-pg="v">Senkrecht mittig</button></div></div>
       ${colored.length ? `<div class="field" style="flex-direction:row;align-items:center;gap:10px"><label for="insMColor">Farbe für Texte &amp; Formen</label><input type="color" id="insMColor" value="${safeColor(colored[0].color).slice(0, 7)}"></div>` : ""}
+      ${many.length === 2 ? `<div class="field"><span class="lbl">Kombinieren <em>(das obere Element wirkt auf das untere)</em></span><div class="btnrow"><button class="btn small" type="button" id="insMask" title="Das untere Element ist nur innerhalb des oberen sichtbar">In Form einpassen</button><button class="btn small" type="button" id="insCut" title="Das obere Element wird aus dem unteren herausgeschnitten">Ausschneiden</button></div></div>` : ""}
       <div class="btnrow">
         ${many.some(x => x.type === "image") ? '<button class="btn small" type="button" id="insCropAll">Ränder abschneiden</button>' : ""}
         <button class="btn small" type="button" id="insDup">Duplizieren</button>
@@ -1794,6 +1886,7 @@ function renderInspector() {
     box.querySelectorAll("[data-pg]").forEach(b => b.onclick = () => { const B = worldBox(many), c = curComp(); for (const x of many) { if (b.dataset.pg === "h") x.cx += c.w / 2 - B.cx; else x.cy += c.h / 2 - B.cy; patchLayer(x, false); } renderSel(); commit(); });
     const mc = $("#insMColor"); if (mc) { mc.oninput = () => { colored.forEach(x => { x.color = mc.value; patchLayer(x, true); }); }; mc.onchange = commit; }
     $("#insDup").onclick = duplicateSel; $("#insDel").onclick = deleteSel;
+    if ($("#insMask")) { $("#insMask").onclick = () => linkHelper("mask"); $("#insCut").onclick = () => linkHelper("cut"); }
     const ca = $("#insCropAll"); if (ca) ca.onclick = async () => { let n = 0; for (const x of many) if (await cropLayer(x)) n++; renderScene(); commit(); toast(n ? `${n} Ränder abgeschnitten` : "Kein leerer Rand gefunden"); };
     return;
   }
@@ -1805,8 +1898,10 @@ function renderInspector() {
   }
   const isText = l.type === "text", isShape = l.type === "shape";
   const f = isText ? fontOf(l) : null, SP = isShape ? SHAPES[l.shape] || {} : null;
+  const linked = l.helper || l.maskId || l.cutIds?.length;
   box.innerHTML = `
     <h4>${isText ? "Text" : esc(l.name || "Bild")}</h4>
+    ${linked ? `<div class="notice" style="margin:0"><span>${l.helper === "mask" ? "Dient als Maske: das Element darunter ist nur hier sichtbar." : l.helper === "cut" ? "Wird aus dem Element darunter ausgeschnitten." : l.maskId && l.cutIds?.length ? "Hat eine Maske und eine Aussparung." : l.maskId ? "Ist in eine Form eingepasst." : "Hat eine Aussparung."}</span><button type="button" class="btn small" id="insUnlink">Lösen</button></div>` : ""}
     ${isShape ? `
       <div class="rowinline">
         <div class="field"><label for="insW">Breite</label><input type="number" id="insW" min="4" value="${Math.round(l.w)}"></div>
@@ -1836,6 +1931,29 @@ function renderInspector() {
         <div class="seg" role="group" aria-label="Ausrichtung">${[["left", "Links"], ["center", "Mitte"], ["right", "Rechts"]].map(([k, n]) => `<button type="button" data-align="${k}" aria-pressed="${l.align === k}">${n}</button>`).join("")}</div>
         ${f.kind === "s" ? `<button class="btn small" type="button" id="insBold" aria-pressed="${(l.weight || 400) >= 700}">Fett</button>` : ""}
       </div>
+      <details class="adv" id="insFx" ${C.fxOpen ? "open" : ""}><summary><span>Effekte</span><span class="advsum">${[l.sx && l.sx !== 100 || l.sy && l.sy !== 100 ? "Gedehnt" : "", l.just ? "Blocksatz" : "", l.warp && l.warp !== "none" ? WARPS[l.warp] : "", l.ow || l.hollow ? "Kontur" : "", l.shm && l.shm !== "none" ? (l.shm === "3d" ? "3D" : "Schatten") : ""].filter(Boolean).join(" · ")}</span></summary>
+        <div class="rowinline">
+          <div class="field"><label for="fxSx">Breite <output id="fxSxOut">${l.sx ?? 100} %</output></label><input type="range" id="fxSx" min="30" max="300" value="${l.sx ?? 100}"></div>
+          <div class="field"><label for="fxSy">Höhe <output id="fxSyOut">${l.sy ?? 100} %</output></label><input type="range" id="fxSy" min="30" max="400" value="${l.sy ?? 100}"></div>
+        </div>
+        <div class="field"><label for="fxLead">Zeilenabstand <output id="fxLeadOut">${l.lead ?? 100} %</output></label><input type="range" id="fxLead" min="40" max="180" value="${l.lead ?? 100}"></div>
+        ${f.kind === "g" ? `<div class="field"><span class="lbl">Zeilen</span><div class="seg" role="group" aria-label="Blocksatz" style="flex-wrap:wrap">${[["", "Normal"], ["w", "Gleich breit"], ["p", "Gleich breit & hoch"]].map(([k, n]) => `<button type="button" data-just="${k}" aria-pressed="${(l.just || "") === k}">${n}</button>`).join("")}</div></div>
+        <div class="rowinline">
+          <div class="field"><label for="fxWarp">Verzerren</label><select id="fxWarp">${Object.entries(WARPS).map(([k, n]) => `<option value="${k}" ${(l.warp || "none") === k ? "selected" : ""}>${n}</option>`).join("")}</select></div>
+          <div class="field"><label for="fxWamt">Stärke <output id="fxWamtOut">${l.wamt ?? 50}</output></label><input type="range" id="fxWamt" min="-100" max="100" value="${l.wamt ?? 50}"></div>
+        </div>` : `<p class="hint">Blocksatz und Verzerren gehen mit Flyer-Schriften und eigenen Schriften, nicht mit Systemschriften.</p>`}
+        <div class="rowinline">
+          <div class="field"><label for="fxOw">Kontur <output id="fxOwOut">${l.ow || 0}</output></label><input type="range" id="fxOw" min="0" max="20" step="0.5" value="${l.ow || 0}"></div>
+          <div class="field" style="flex:0 0 auto"><label for="fxOcol">Farbe</label><input type="color" id="fxOcol" value="${safeColor(l.ocol || "#000000").slice(0, 7)}"></div>
+        </div>
+        <label class="check"><input type="checkbox" id="fxHollow" ${l.hollow ? "checked" : ""}> Hohl (nur Kontur)</label>
+        <div class="field"><span class="lbl">Schatten</span><div class="seg" role="group" aria-label="Schatten">${[["none", "Aus"], ["drop", "Schatten"], ["3d", "3D"]].map(([k, n]) => `<button type="button" data-shm="${k}" aria-pressed="${(l.shm || "none") === k}">${n}</button>`).join("")}</div></div>
+        <div class="rowinline">
+          <div class="field"><label for="fxShx">Versatz → <output id="fxShxOut">${l.shx ?? 5}</output></label><input type="range" id="fxShx" min="-30" max="30" value="${l.shx ?? 5}"></div>
+          <div class="field"><label for="fxShy">↓ <output id="fxShyOut">${l.shy ?? 5}</output></label><input type="range" id="fxShy" min="-30" max="30" value="${l.shy ?? 5}"></div>
+          <div class="field" style="flex:0 0 auto"><label for="fxShc">Farbe</label><input type="color" id="fxShc" value="${safeColor(l.shcol || "#000000").slice(0, 7)}"></div>
+        </div>
+      </details>
       <div class="field"><label for="insArc">Bogen <output id="insArcOut">${arcLabel(l.arc)}</output></label><input type="range" id="insArc" min="-360" max="360" step="5" value="${l.arc || 0}"></div>
       <div class="seg" role="group" aria-label="Textform" style="flex-wrap:wrap">${[[0, "Gerade"], [140, "Bogen oben"], [-140, "Bogen unten"], [360, "Kreis"]].map(([v, n]) => `<button type="button" data-arc="${v}" aria-pressed="${(l.arc || 0) === v}">${n}</button>`).join("")}</div>
       <button class="btn small" type="button" id="insEdit">Im Bild schreiben</button>
@@ -1869,6 +1987,7 @@ function renderInspector() {
   on("insDup", "click", duplicateSel);
   on("insDel", "click", deleteSel);
   on("insDeco", "click", () => saveDeco(l));
+  on("insUnlink", "click", () => unlinkHelper(l));
   on("insLock", "click", () => { l.locked = !l.locked; renderScene(); renderLayerList(); renderInspector(); commit(); toast(l.locked ? "Gesperrt – reagiert nicht mehr auf Klicks im Bild. Entsperren über die Ebenenliste." : "Entsperrt"); });
   on("insCrop", "click", async () => { if (await cropLayer(l)) { renderScene(); commit(); renderInspector(); toast("Rand abgeschnitten"); } else toast("Kein leerer Rand gefunden"); });
   if (isShape) {
@@ -1887,6 +2006,15 @@ function renderInspector() {
     box.querySelectorAll("[data-align]").forEach(b => b.onclick = () => { l.align = b.dataset.align; patchLayer(l, true); renderSel(); commit(); box.querySelectorAll("[data-align]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
     on("insBold", "click", () => { l.weight = (l.weight || 400) >= 700 ? 400 : 700; patchLayer(l, true); renderSel(); commit(); $("#insBold").setAttribute("aria-pressed", String(l.weight >= 700)); });
     on("insEdit", "click", () => openInline(l));
+    $("#insFx").addEventListener("toggle", e => { C.fxOpen = e.target.open; });
+    const fxNum = (id, key, unit = "") => { on(id, "input", live(() => { l[key] = +$("#" + id).value; const o = $("#" + id + "Out"); if (o) o.textContent = l[key] + unit; })); on(id, "change", commit); };
+    fxNum("fxSx", "sx", " %"); fxNum("fxSy", "sy", " %"); fxNum("fxLead", "lead", " %"); fxNum("fxWamt", "wamt"); fxNum("fxOw", "ow"); fxNum("fxShx", "shx"); fxNum("fxShy", "shy");
+    on("fxWarp", "change", () => { l.warp = $("#fxWarp").value; patchLayer(l, true); renderSel(); commit(); });
+    on("fxOcol", "input", live(() => l.ocol = $("#fxOcol").value)); on("fxOcol", "change", commit);
+    on("fxShc", "input", live(() => l.shcol = $("#fxShc").value)); on("fxShc", "change", commit);
+    on("fxHollow", "change", () => { l.hollow = $("#fxHollow").checked; patchLayer(l, true); renderSel(); commit(); });
+    box.querySelectorAll("[data-just]").forEach(b => b.onclick = () => { l.just = b.dataset.just || null; patchLayer(l, true); renderSel(); commit(); box.querySelectorAll("[data-just]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
+    box.querySelectorAll("[data-shm]").forEach(b => b.onclick = () => { l.shm = b.dataset.shm; patchLayer(l, true); renderSel(); commit(); box.querySelectorAll("[data-shm]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
     const setArc = v => { l.arc = Math.max(-360, Math.min(360, +v || 0)); $("#insArc").value = l.arc; $("#insArcOut").textContent = arcLabel(l.arc); box.querySelectorAll("[data-arc]").forEach(x => x.setAttribute("aria-pressed", String(+x.dataset.arc === l.arc))); };
     on("insArc", "input", live(() => setArc($("#insArc").value))); on("insArc", "change", commit);
     box.querySelectorAll("[data-arc]").forEach(b => b.onclick = () => { setArc(b.dataset.arc); patchLayer(l, true); renderSel(); commit(); });
@@ -1913,6 +2041,8 @@ function duplicateSel() {
 function deleteSel() {
   const sel = selected(); if (!sel.length) return;
   const c = curComp(); c.layers = c.layers.filter(x => !sel.includes(x)); C.sel = null; C.multi = null;
+  const ids = new Set(sel.map(x => x.id));
+  c.layers.forEach(x => { if (ids.has(x.maskId)) delete x.maskId; if (x.cutIds) x.cutIds = x.cutIds.filter(id => !ids.has(id)); });
   commit(); renderScene(); renderInspector(); renderLayerList();
 }
 function renderLayerList() {
@@ -1922,7 +2052,7 @@ function renderLayerList() {
     const b = document.createElement("button"); b.type = "button"; b.className = "layerrow";
     b.setAttribute("aria-current", String(selected().includes(l)));
     const label = l.type === "text" ? "„" + String(l.text).replace(/\n/g, " ").slice(0, 40) + "“" : l.name;
-    b.innerHTML = `<span class="tag">${l.type === "text" ? "Text" : l.type === "shape" ? "Form" : esc(MODES[l.mode]?.label || "Bild")}</span><span>${esc(label)}</span>${l.locked ? '<span title="gesperrt" aria-label="gesperrt">🔒</span>' : ""}`;
+    b.innerHTML = `<span class="tag">${l.helper === "mask" ? "Maske" : l.helper === "cut" ? "Aussparung" : l.type === "text" ? "Text" : l.type === "shape" ? "Form" : esc(MODES[l.mode]?.label || "Bild")}</span><span>${esc(label)}</span>${l.locked ? '<span title="gesperrt" aria-label="gesperrt">🔒</span>' : ""}`;
     b.onclick = e => { const cur = selected().map(x => x.id); setSelection(e.shiftKey ? (cur.includes(l.id) ? cur.filter(id => id !== l.id) : [...cur, l.id]) : [l.id]); };
     box.append(b);
   });
