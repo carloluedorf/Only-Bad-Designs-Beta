@@ -481,7 +481,9 @@ a.btn { text-decoration: none; color: inherit; }
       <p class="hint">Klicke ein Element an, um es ins Bild zu setzen. Schriften fügen eine Textebene hinzu.</p>
       <div class="chips" id="libFilter"></div>
       <div class="lib" id="lib"></div>
-      <button class="btn small" type="button" id="addText">+ Text hinzufügen</button>
+      <div class="btnrow"><button class="btn small" type="button" id="addText">+ Text hinzufügen</button><label class="btn small" for="addPhoto" style="cursor:pointer">+ Foto hinzufügen</label></div>
+      <input type="file" id="addPhoto" accept="image/png,image/jpeg,image/webp,image/gif" multiple class="sr">
+      <p class="hint" style="margin:0">Fotos kannst du auch direkt aufs Bild ziehen oder mit Strg+V einfügen.</p>
     </section>
 
     <section class="panel" id="printPanel" hidden aria-labelledby="h-pr">
@@ -689,7 +691,7 @@ const save = () => {
 };
 const saveRefs = () => { if (!store.set("refs", S.refs)) toast("Referenzen sind zu groß zum Merken – sie bleiben bis zum Neuladen."); };
 let compWarned = false;
-const saveComps = () => { if (S.mode === "compose") try { renderIntro(); } catch {} store.set("compId", S.compId); if (!store.set("comps", S.comps) && !compWarned) { compWarned = true; toast("Die Kompositionen sind zu groß zum Speichern im Browser. Exportiere wichtige Stände."); } };
+const saveComps = () => { if (S.mode === "compose") try { renderIntro(); } catch {} store.set("compId", S.compId); if (!store.set("comps", S.comps.map(c => ({ ...c, layers: c.layers.map(l => l.src ? { ...l, svg: undefined } : l) }))) && !compWarned) { compWarned = true; toast("Die Kompositionen sind zu groß zum Speichern im Browser. Exportiere wichtige Stände."); } };
 
 /* ---------- downloads ---------- */
 let dlPromise = null;
@@ -715,6 +717,7 @@ async function fileToRef(file) {
   return { id: uid(), name: file.name, url: c.toDataURL(keepAlpha ? "image/png" : "image/jpeg", 0.9) };
 }
 async function addFiles(files) {
+  if (S.mode === "compose") { addPhotoFiles(files); return; }
   const list = [...files].filter(f => /^image\/(png|jpeg|webp|gif)$/.test(f.type));
   if (!list.length) { toast("Nur PNG, JPG, WebP oder GIF."); return; }
   for (const f of list) { try { S.refs.push(await fileToRef(f)); } catch { toast(f.name + " konnte nicht gelesen werden."); } }
@@ -1629,6 +1632,7 @@ async function cropLayer(l) {
   const c0 = worldCorners(l, b), ncx = (c0[0].x + c0[2].x) / 2, ncy = (c0[0].y + c0[2].y) / 2;
   l.svg = l.svg.replace(m[0], m[0].replace(/viewBox="[^"]*"/, `viewBox="${nv.join(" ")}"`));
   l.vw = nv[2]; l.vh = nv[3]; l.w = b.w; l.cx = ncx; l.cy = ncy;
+  if (l.src && l.rw) l.cropF = [nv[0] / l.rw, nv[1] / l.rh, nv[2] / l.rw, nv[3] / l.rh];
   return true;
 }
 /* Masken & Aussparungen: Hilfsebenen (helper "mask" | "cut") werden nicht selbst gezeichnet,
@@ -1962,6 +1966,24 @@ function renderInspector() {
       <div class="btnrow">
         <button class="btn small" type="button" id="insFlip" aria-pressed="${!!l.flip}">Spiegeln</button>
         <button class="btn small" type="button" id="insCover">Fläche füllen</button>
+      </div>
+      ${l.src ? `<details class="adv" id="insPh" ${C.phOpen ? "open" : ""}><summary><span>Foto-Look</span><span class="advsum">${PH_MODES[l.ph?.mode || "orig"]}</span></summary>
+        <div class="seg" role="group" aria-label="Foto-Look" style="flex-wrap:wrap">${Object.entries(PH_MODES).map(([k, n]) => `<button type="button" data-ph="${k}" aria-pressed="${(l.ph?.mode || "orig") === k}">${n}</button>`).join("")}</div>
+        ${(l.ph?.mode || "orig") !== "orig" ? `
+        <div class="rowinline">
+          <div class="field"><label for="phBr">Helligkeit <output id="phBrOut">${l.ph.br || 0}</output></label><input type="range" id="phBr" min="-100" max="100" value="${l.ph.br || 0}"></div>
+          <div class="field"><label for="phCt">Kontrast <output id="phCtOut">${l.ph.ct || 0}</output></label><input type="range" id="phCt" min="-50" max="150" value="${l.ph.ct || 0}"></div>
+        </div>
+        ${l.ph.mode === "dots" || l.ph.mode === "lines" ? `<div class="field"><label for="phSize">Rastergröße <output id="phSizeOut">${l.ph.size || 10}</output></label><input type="range" id="phSize" min="3" max="40" value="${l.ph.size || 10}"></div>` : ""}
+        ${l.ph.mode === "copy" ? `<div class="field"><label for="phGrain">Körnung <output id="phGrainOut">${l.ph.grain ?? 40}</output></label><input type="range" id="phGrain" min="0" max="100" value="${l.ph.grain ?? 40}"></div>` : ""}
+        <div class="rowinline">
+          <div class="field" style="flex:0 0 auto"><label for="phInk">Druckfarbe</label><input type="color" id="phInk" value="${safeColor(l.ph.ink || "#111111").slice(0, 7)}"></div>
+          <div class="field" style="flex:0 0 auto"><label for="phPaper">Papier</label><input type="color" id="phPaper" value="${safeColor(l.ph.paper || "#ffffff").slice(0, 7)}" ${l.ph.transp !== false ? "disabled" : ""}></div>
+        </div>
+        <label class="check"><input type="checkbox" id="phTransp" ${l.ph.transp !== false ? "checked" : ""}> Papier durchsichtig</label>
+        <label class="check"><input type="checkbox" id="phInv" ${l.ph.inv ? "checked" : ""}> Umkehren (hell druckt)</label>` : ""}
+      </details>` : ""}
+      <div class="btnrow">
         <button class="btn small" type="button" id="insCrop" title="Leeren Rand um das Motiv entfernen, damit der Rahmen eng anliegt">Rand abschneiden</button>
         <button class="btn small" type="button" id="insDeco">Als Deko speichern</button>
       </div>`}
@@ -1988,6 +2010,19 @@ function renderInspector() {
   on("insDel", "click", deleteSel);
   on("insDeco", "click", () => saveDeco(l));
   on("insUnlink", "click", () => unlinkHelper(l));
+  if (l.src) {
+    $("#insPh")?.addEventListener("toggle", e => { C.phOpen = e.target.open; });
+    let phT = 0, phRun = 0;
+    const redo = (rerender) => { clearTimeout(phT); phT = setTimeout(async () => { const r = ++phRun; await photoRender(l); if (r !== phRun) return; renderScene(); if (rerender) renderInspector(); }, 120); };
+    const P = () => (l.ph ||= { mode: "orig" });
+    box.querySelectorAll("[data-ph]").forEach(b => b.onclick = async () => { const ph = P(); ph.mode = b.dataset.ph; if (ph.transp == null) ph.transp = true; if (!ph.ink) ph.ink = curComp().print?.on ? curComp().print.ink : "#111111"; await photoRender(l); renderScene(); renderInspector(); commit(); });
+    const phNum = (id, key) => { on(id, "input", () => { P()[key] = +$("#" + id).value; const o2 = $("#" + id + "Out"); if (o2) o2.textContent = P()[key]; redo(false); }); on(id, "change", () => setTimeout(commit, 200)); };
+    phNum("phBr", "br"); phNum("phCt", "ct"); phNum("phSize", "size"); phNum("phGrain", "grain");
+    on("phInk", "input", () => { P().ink = $("#phInk").value; redo(false); }); on("phInk", "change", () => setTimeout(commit, 200));
+    on("phPaper", "input", () => { P().paper = $("#phPaper").value; redo(false); }); on("phPaper", "change", () => setTimeout(commit, 200));
+    on("phTransp", "change", async () => { P().transp = $("#phTransp").checked; await photoRender(l); renderScene(); renderInspector(); commit(); });
+    on("phInv", "change", async () => { P().inv = $("#phInv").checked; await photoRender(l); renderScene(); commit(); });
+  }
   on("insLock", "click", () => { l.locked = !l.locked; renderScene(); renderLayerList(); renderInspector(); commit(); toast(l.locked ? "Gesperrt – reagiert nicht mehr auf Klicks im Bild. Entsperren über die Ebenenliste." : "Entsperrt"); });
   on("insCrop", "click", async () => { if (await cropLayer(l)) { renderScene(); commit(); renderInspector(); toast("Rand abgeschnitten"); } else toast("Kein leerer Rand gefunden"); });
   if (isShape) {
@@ -2117,7 +2152,16 @@ function renderToolbar() {
   $("#compBg").disabled = !c.bg;
   updateUndo();
 }
+/* Fotos werden ohne fertiges Bild gespeichert (nur Original + Einstellungen) und hier wieder berechnet */
+function hydratePhotos(c) {
+  for (const l of c.layers) {
+    if (!l.src || l.svg) continue;
+    if (l.rw) setPhotoSvg(l, l.src, l.rw, l.rh); else l.svg = rasterSvg(l.src, l.vw || 1000, l.vh || 1000);
+    if (l.ph && l.ph.mode !== "orig") photoRender(l).then(() => { if (S.mode === "compose" && curComp() === c) renderScene(); });
+  }
+}
 function renderComposer() {
+  hydratePhotos(curComp());
   if (!FLY.index) flyIndex().then(() => { if (S.mode === "compose") renderInspector(); });
   hist(curComp());
   renderToolbar(); renderScene(); renderInspector(); renderLayerList(); renderLibrary(); renderPrintPanel();
@@ -2139,6 +2183,86 @@ $("#undo").onclick = undo;
 $("#cropAll").onclick = async () => { let n = 0; for (const l of curComp().layers) if (await cropLayer(l)) n++; renderScene(); if (n) commit(); toast(n ? `${n} Ränder abgeschnitten` : "Kein leerer Rand gefunden"); };
 $("#redo").onclick = redo;
 $("#addText").onclick = () => addTextLayer("b:grotesk", "DEIN TEXT");
+$("#addPhoto").onchange = e => { addPhotoFiles(e.target.files); e.target.value = ""; };
+
+/* --- Fotos im Druck-Look --- */
+const PH_MODES = { orig: "Original", thr: "Schwelle", dots: "Raster", lines: "Linien", dither: "Dither", copy: "Kopierer" };
+const rasterSvg = (url, W, H) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}"><image href="${url}" width="${W}" height="${H}"/></svg>`;
+/* Foto-Ebene aus Rasterbild setzen; ein Zuschnitt (cropF, Anteile 0…1) bleibt über Neuberechnungen erhalten */
+function setPhotoSvg(l, url, W, H) {
+  const f = l.cropF || [0, 0, 1, 1], vb = [f[0] * W, f[1] * H, f[2] * W, f[3] * H].map(rd);
+  l.svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.join(" ")}"><image href="${url}" width="${W}" height="${H}"/></svg>`;
+  l.vw = vb[2]; l.vh = vb[3]; l.rw = W; l.rh = H;
+}
+async function addPhotoFiles(files) {
+  const list = [...files].filter(f => /^image\/(png|jpeg|webp|gif)$/.test(f.type));
+  if (!list.length) { toast("Nur PNG, JPG, WebP oder GIF."); return; }
+  const c = curComp(); let last = null;
+  for (const f of list) {
+    try {
+      const url0 = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(f); });
+      const img = await loadImg(url0), sc = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+      const W = Math.max(1, Math.round(img.naturalWidth * sc)), H = Math.max(1, Math.round(img.naturalHeight * sc));
+      const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+      const g = cv.getContext("2d"); g.drawImage(img, 0, 0, W, H);
+      const src = /png|webp|gif/.test(f.type) ? cv.toDataURL("image/png") : cv.toDataURL("image/jpeg", 0.86);
+      const w = Math.min(c.w, c.h) * 0.6;
+      last = { id: uid(), type: "image", name: f.name.replace(/\.[^.]+$/, "").slice(0, 40), mode: "grafik", src, ph: { mode: "orig" }, svg: rasterSvg(src, W, H), vw: W, vh: H, rw: W, rh: H, w, cx: c.w / 2, cy: c.h / 2, rot: 0, opacity: 1, flip: false };
+      c.layers.push(last);
+    } catch { toast(f.name + " konnte nicht gelesen werden."); }
+  }
+  if (last) { C.sel = last.id; C.multi = null; C.phOpen = true; commit(); renderComposer(); toast("Foto eingefügt – rechts unter „Foto-Look“ machst du daraus einen Druck."); }
+}
+/* Foto in Druckfarbe umrechnen: l.src bleibt das Original, l.svg ist das Ergebnis */
+async function photoRender(l) {
+  const P = l.ph || { mode: "orig" }, img = await loadImg(l.src);
+  const sc = Math.min(1, 1400 / Math.max(img.naturalWidth, img.naturalHeight)), W = Math.max(1, Math.round(img.naturalWidth * sc)), H = Math.max(1, Math.round(img.naturalHeight * sc));
+  if (P.mode === "orig") { setPhotoSvg(l, l.src, img.naturalWidth, img.naturalHeight); return; }
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  const g = cv.getContext("2d", { willReadFrequently: true }); g.fillStyle = "#ffffff"; g.fillRect(0, 0, W, H); g.drawImage(img, 0, 0, W, H);
+  const px = g.getImageData(0, 0, W, H).data, N = W * H, v = new Float32Array(N);
+  const ct = 1 + (P.ct || 0) / 60, br = (P.br || 0) * 1.28;
+  for (let i = 0; i < N; i++) {
+    const a = px[i * 4 + 3] / 255, lum = (0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2]) * a + 255 * (1 - a);
+    let x = (lum - 128) * ct + 128 + br; if (P.inv) x = 255 - x; v[i] = Math.max(0, Math.min(255, x));
+  }
+  const ink = safeColor(P.ink || "#111111"), [ir, ig, ib] = [1, 3, 5].map(k => parseInt(ink.slice(k, k + 2), 16));
+  const out = document.createElement("canvas"); out.width = W; out.height = H;
+  const o = out.getContext("2d");
+  if (!P.transp) { o.fillStyle = safeColor(P.paper || "#ffffff"); o.fillRect(0, 0, W, H); }
+  o.fillStyle = ink;
+  const dark = (x, y) => 1 - v[Math.min(H - 1, Math.max(0, y | 0)) * W + Math.min(W - 1, Math.max(0, x | 0))] / 255;
+  if (P.mode === "dots" || P.mode === "lines") {
+    const s = Math.max(3, (P.size || 10) * W / 1000), avg = (x, y) => { let t = 0, n = 0; for (let dy = -s / 3; dy <= s / 3; dy += Math.max(1, s / 4)) for (let dx = -s / 3; dx <= s / 3; dx += Math.max(1, s / 4)) { t += dark(x + dx, y + dy); n++; } return t / n; };
+    if (P.mode === "dots") {
+      const a = Math.PI / 4, ca = Math.cos(a), sa = Math.sin(a), R = Math.hypot(W, H);
+      for (let u = -R; u < R; u += s) for (let w = -R; w < R; w += s) {
+        const x = W / 2 + u * ca - w * sa, y = H / 2 + u * sa + w * ca;
+        if (x < -s || y < -s || x > W + s || y > H + s) continue;
+        const D = avg(x, y); if (D < 0.04) continue;
+        o.beginPath(); o.arc(x, y, s * 0.5 * Math.sqrt(D) * 1.42, 0, Math.PI * 2); o.fill();
+      }
+    } else {
+      for (let y = s / 2; y < H + s / 2; y += s) for (let x = 0; x < W; x += 2) { const D = avg(x, y); if (D > 0.04) o.fillRect(x, y - s * D / 2, 2.2, s * D); }
+    }
+  } else {
+    const id = o.getImageData(0, 0, W, H), d = id.data, e = P.mode === "dither" ? Float32Array.from(v) : null;
+    const thr = 128, rnd = rng(7), grain = (P.grain ?? 40) * 1.6;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = y * W + x; let on;
+      if (P.mode === "dither") {
+        const old = e[i], nv = old < thr ? 0 : 255, err = old - nv; on = nv === 0;
+        if (x + 1 < W) e[i + 1] += err * 7 / 16;
+        if (y + 1 < H) { if (x > 0) e[i + W - 1] += err * 3 / 16; e[i + W] += err * 5 / 16; if (x + 1 < W) e[i + W + 1] += err / 16; }
+      } else if (P.mode === "copy") on = v[i] + (rnd() - 0.5) * grain < thr - 10;
+      else on = v[i] < thr;
+      if (on) { d[i * 4] = ir; d[i * 4 + 1] = ig; d[i * 4 + 2] = ib; d[i * 4 + 3] = 255; }
+    }
+    o.putImageData(id, 0, 0);
+  }
+  const url = out.toDataURL("image/png");
+  setPhotoSvg(l, url, W, H);
+}
 async function flyReady(c) { await Promise.allSettled(flyUsed(c).map(flyLoad)); }
 $("#expSvg").onclick = async () => { const c = curComp(); await flyReady(c); offer(slug(c.name) + ".svg", compSvg(c)); };
 $("#expPng").onclick = async () => {

@@ -5,7 +5,10 @@ Bild rein, Vektor raus – ein Werkzeug im Browser, ganz ohne KI.
 - **Vektorisieren:** Bilder exakt als SVG nachzeichnen, Farben ändern, verformen, Buchstaben als Schrift übernehmen.
 - **Schrift:** Bild mit Schrift hochladen – das Tool erkennt die Buchstaben, vergleicht sie mit rund 1.900 freien Schriften aus Google Fonts und lädt die ähnlichsten direkt ins Tool.
 - **Entwürfe:** alles Gespeicherte bearbeiten (Farben, Hintergrund, Stil) und exportieren.
-- **Komposition:** Entwürfe und Schriften zu Flyern und Postern zusammensetzen, Text auch im Bogen oder Kreis, Export als SVG/PNG.
+- **Komposition:** Entwürfe und Schriften zu Flyern und Postern zusammensetzen, Export als SVG/PNG.
+  - **Text-Effekte:** Bogen und Kreis, Breite/Höhe dehnen, Blocksatz-Stapel, Verzerren (Bogen, Wölbung, Welle, Flagge, Ansteigend), Kontur/hohl, Schatten und 3D.
+  - **Masken & Aussparungen:** Bild in Form einpassen, Text aus Fläche ausschneiden.
+  - **Fotos im Druck-Look:** Schwelle, Raster, Linien, Dither, Kopierer – in beliebiger Druckfarbe.
   - **Vorlage aus Bild:** Flyer oder Plakat hochladen – das Tool erkennt Papier- und Druckfarben, Textzeilen (Inhalt per Texterkennung [Tesseract](https://github.com/naptha/tesseract.js), Schrift per Schriftsuche) und Motive (als Vektor), Rahmen, Linien, Kreise und Flächen (als einstellbare Formen) und baut daraus eine bearbeitbare Komposition – wahlweise direkt in 1:1, 4:5, 9:16 oder A4.
   - **Flyer-Schriften:** 29 freie Schriften (Google Fonts, OFL) in Gruppen wie Metal & Fraktur, Jugendstil, Holzschrift & Western, 70er, Elegant, Comic – liegen als Glyphen-Dateien in `fonts/flyer/` (neu bauen mit `node scripts/build-flyer-fonts.mjs <woff-ordner>`)
   - **Deko:** rund 50 Formen mit einstellbarer Strichstärke; Formen und Motive lassen sich mit „Als Deko speichern“ in die Bibliothek legen.
